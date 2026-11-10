@@ -1,4 +1,4 @@
-import { fill } from "./config.ts";
+import { configPath, fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { laneGoalActive } from "./goal-record.ts";
 import { BRIEF_START, footer, originalBrief, quoteForPane } from "./launch-footer.ts";
@@ -10,6 +10,7 @@ import { Reports } from "./reports.ts";
 import { doneSyntaxErrors } from "./signals.ts";
 import type { BudgetLimits } from "./supervision-observe.ts";
 import { Lessons, renderLessons } from "./lessons.ts";
+import { laneTokenEnv } from "./slack-token.ts";
 
 export type LaunchInput = {
   readonly key: string;
@@ -128,7 +129,8 @@ const startLane = async (
   const group = deps.config.laneWorkspace || undefined;
   let ref: SessionRef;
   try {
-    const spec = { name: input.key, role: "lane", container: "tab", cwd, env: {} } as const;
+    const env = laneTokenEnv(process.env, configPath());
+    const spec = { name: input.key, role: "lane", container: "tab", cwd, env } as const;
     ref = await rts.default.create(group === undefined ? spec : { ...spec, group });
   } catch (e) {
     throw new LaunchError(`session create failed: ${e instanceof Error ? e.message : String(e)}`);

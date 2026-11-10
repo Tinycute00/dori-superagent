@@ -1,7 +1,7 @@
 /** dori sync, boot, verify-pr and the host loops: watch, freshness, dead-panes, guard, heavy, can-launch. */
 import { dirname, join } from "node:path";
 import { bootCheck, slackAuthCheck } from "./boot.ts";
-import { type Command, die, every, slackAuth } from "./cli-context.ts";
+import { type Command, die, envSlackToken, every, slackAuth } from "./cli-context.ts";
 import { deadPaneTick, newDeadPaneState } from "./dead-panes.ts";
 import { watchTick } from "./done-flow.ts";
 import { freshnessTick } from "./freshness.ts";
@@ -26,7 +26,7 @@ const sync: Command = async ({ values, deps }) => {
 };
 
 const boot: Command = async ({ deps, config }) => {
-  const token = process.env["DORI_SLACK_TOKEN"];
+  const token = envSlackToken();
   const slack = token ? new Slack(fetchHttp, realClock, slackAuth(token)) : null;
   const sessionDirs = [
     process.env["PI_SESSION_DIR"],
