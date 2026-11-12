@@ -3,48 +3,67 @@ import type { Runtimes } from "../../../../src/runtime/registry.ts";
 import type { SessionRef } from "../../../../src/runtime/types.ts";
 
 /**
- * Every phrase that means a lane failed to start, one row each (#202). `anywhere` rows are text no healthy screen prints,
- * so they match even glued onto the end of a pane-wide line by the unwrapped read (`...okNo API key`). `word` rows are
- * also ordinary words or code, so each must stand alone (see `standsAlone`) and names a failure, not a topic: bare
- * `quota` or `rate limit` is no row, `quota exceeded` and `rate limit reached` are. A gap is one space as printed (the
- * unwrapped read puts back a space hc cut at a wrap), or `_`/`-` in a code, or nothing in a camelCase code.
- * The fixture corpus in test/startup-screen.test.ts holds real error lines and the code and prose each row must not match.
+ * Every phrase that means a lane failed to start, one row each (#202), in three kinds:
+ * - `anywhere`: text no healthy screen prints (omo's own failure lines, provider messages). It matches even glued onto
+ *   the end of a pane-wide line by the unwrapped read (`...okNo API key`).
+ * - `word`: a phrase that names a failure, not a topic (`rate limit reached`, never bare `rate limit`, `quota` or a
+ *   component such as `rate limiter`). It must stand alone; see `standsAlone`. Its gaps are single spaces as printed
+ *   (the unwrapped read puts back a space hc cut at a wrap), never `-`, so a kebab-case lane key or brief file name
+ *   such as `fix-rate-limit-error` is not one.
+ * - `value`: an error code (`insufficient_quota`, `QUOTA_EXCEEDED`), counted only where it is a value: after `error`,
+ *   `code`, `type` or `status` and a `:` or `=` (`"type":"rate_limit_error"`, `code=quotaExceeded`). The same code
+ *   in source (`case 'rate_limit_error':`, `instanceof RateLimitError`, `X === 'RESOURCE_EXHAUSTED'`) is not.
+ * test/startup-screen.test.ts holds the corpus: real provider and tool output with its source, rule cases, and code
+ * and prose that must report nothing.
  */
-type Boundary = "anywhere" | "word";
-const PHRASES: readonly (readonly [Boundary, string])[] = [
+type Kind = "anywhere" | "word" | "value";
+const PHRASES: readonly (readonly [Kind, string])[] = [
   ["anywhere", "Cannot find module"],
   ["anywhere", "All fallback models failed"],
   ["anywhere", "No API key"],
   ["anywhere", "model_not_available"],
   ["anywhere", "Session crashed"],
   ["anywhere", "unknown provider"],
-  ["anywhere", "insufficient_quota"],
-  ["anywhere", "RESOURCE_EXHAUSTED"],
-  ["anywhere", "Too Many Requests"],
-  ["anywhere", "rate_limit_error"],
-  ["word", "rate[ _-]?limit(?:s)?[ _-]?(?:exceeded|reached|hit|error)"],
-  ["word", "rate[ -]limit(?:ed|er)"],
-  ["word", "usage[ _-]?limit(?:s)?[ _-]?(?:exceeded|reached|hit)"],
-  ["word", "quota(?:s)?[ _-]?(?:exceeded|exhausted|reached|hit)"],
-  ["word", "exceeded your (?:current )?quota"],
+  ["anywhere", "429 Too Many Requests"],
+  ["anywhere", "429 status code \\(no body\\)"],
+  ["anywhere", "RateLimitError: 4\\d\\d"],
+  ["anywhere", "Resource has been exhausted"],
+  ["anywhere", "would exceed your account's rate limit"],
+  ["anywhere", "exceeded your current quota"],
+  ["word", "rate limit(?:s)? (?:exceeded|reached|hit)"],
+  ["word", "rate limited"],
+  ["word", "usage limit(?:s)? (?:exceeded|reached|hit)"],
+  ["word", "(?:reached|hit) your usage limit"],
+  ["word", "quota(?:s)? (?:exceeded|exhausted|reached|hit)"],
+  ["value", "insufficient_quota|rate_limit_error|resource_exhausted|quota_?exceeded|rate_?limit_?exceeded"],
 ];
-const PATTERNS = PHRASES.map(([boundary, source]) => ({ boundary, re: new RegExp(source, "gi") }));
+const PATTERNS = PHRASES.map(([kind, source]) => ({ kind, re: new RegExp(source, "gi") }));
+/** What touching a word match makes it part of something else: a word, a path, a kebab-case name, a file name. */
+const JOINS = /[a-z0-9_/\\.-]/i;
 /**
- * A `word` match stands alone when no letter, digit or `_` touches its end, and none its start, except when a join glued
- * it onto a pane-wide line: then it must read as printed text, not an identifier. That is a phrase with a gap
- * (`Rate limit exceeded`, `QUOTA_EXCEEDED`) that starts with a capital or has a `_`, which camelCase (`isQuotaExceeded`,
- * `onRateLimitExceeded`) never is.
+ * A `word` match stands alone when nothing in JOINS touches its end (a `.` only when a word goes on: `reached.` ends a
+ * sentence, `limited.md` is a file), and nothing touches its start, except when a join glued it onto a pane-wide line.
+ * Then it must read as printed text: it starts with a capital and has a space (`...okRate limit reached`), which
+ * camelCase (`onRateLimitExceeded`) never is.
  */
 const standsAlone = (text: string, at: number, found: string): boolean => {
-  if (/[a-z0-9_]/i.test(text[at + found.length] ?? "")) return false;
-  if (!/[a-z0-9_]/i.test(text[at - 1] ?? "")) return true;
-  return /[ _-]/.test(found) && (/^[A-Z]/.test(found) || found.includes("_"));
+  const after = text[at + found.length] ?? "";
+  if (JOINS.test(after) && !(after === "." && !/[a-z0-9_]/i.test(text[at + found.length + 1] ?? ""))) return false;
+  const before = text[at - 1] ?? "";
+  if (!JOINS.test(before)) return true;
+  return /[a-z0-9]/i.test(before) && /^[A-Z]/.test(found) && found.includes(" ");
 };
+/** A `value` match counts only as the value of an error, code, type or status field. */
+const VALUE_KEY = /(?:error|code|type|status)["']?\s*(?:[:=]|=(?!=))\s*["']?$/i;
+const isValue = (text: string, at: number, found: string): boolean =>
+  VALUE_KEY.test(text.slice(Math.max(0, at - 24), at)) && !/[a-z0-9_]/i.test(text[at + found.length] ?? "");
+const counts = (kind: Kind, text: string, at: number, found: string): boolean =>
+  kind === "anywhere" || (kind === "word" ? standsAlone(text, at, found) : isValue(text, at, found));
 const firstFailure = (text: string): string | null => {
   let first: { at: number; found: string } | undefined;
-  for (const { boundary, re } of PATTERNS) {
+  for (const { kind, re } of PATTERNS) {
     for (const m of text.matchAll(re)) {
-      if (boundary === "word" && !standsAlone(text, m.index, m[0])) continue;
+      if (!counts(kind, text, m.index, m[0])) continue;
       if (!first || m.index < first.at) first = { at: m.index, found: m[0] };
       break;
     }
