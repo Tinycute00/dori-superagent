@@ -129,11 +129,13 @@ const real = (path: string): string => {
 /**
  * The home a config file belongs to: the directory of the file the OS actually opens (links and `..` resolved
  * physically), so a `link/../config.json` that opens `far/config.json` has `far` as its home. A config file that does
- * not exist yet falls back to its resolved directory. `realpathSync.native` (the OS's realpath): the JS one collapses `..`
+ * not exist yet falls back to its directory, resolved the same way (never `resolve()` first, which drops `..` on paper). `realpathSync.native` (the OS's realpath): the JS one collapses `..`
  * on paper first and so misses the link.
  */
 const homeOf = (configFile: string): string =>
-  existsSync(configFile) ? dirname(realpathSync.native(configFile)) : real(resolve(dirname(configFile)));
+  existsSync(configFile)
+    ? dirname(realpathSync.native(configFile))
+    : real(isAbsolute(configFile) ? dirname(configFile) : `${process.cwd()}${sep}${dirname(configFile)}`);
 /** Whether an already-resolved path is inside an already-resolved directory. */
 const inside = (dir: string, path: string): boolean => {
   const rel = relative(dir, path);
