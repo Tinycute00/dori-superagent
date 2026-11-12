@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bootCheck, envSlackCheck, slackAuthCheck } from "../src/boot.ts";
 import { Slack } from "../src/messenger/slack.ts";
@@ -81,11 +81,11 @@ test("a bad token file is a failed SLACK token-file line and boot still runs its
   // When boot runs with each.
   const wide = await bootCheck({
     ...bootDeps(world),
-    slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: open }, "linux"),
+    slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: open }, "linux", join(state.dir, "config.json")),
   });
   const missing = await bootCheck({
     ...bootDeps(world),
-    slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: absent }, "linux"),
+    slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: absent }, "linux", join(state.dir, "config.json")),
   });
   // Then each names the file as a failed check, the local checks still ran, the run is incomplete, and no token shows.
   expect(wide.lines).toContain(
@@ -106,10 +106,30 @@ test("on Windows boot reads the token file and says its ACL is not checked", asy
   const client = () => ({ call: async () => ({ ok: true, user_id: "U1", team_id: "T1" }) });
   const r = await bootCheck({
     ...bootDeps(newWorld()),
-    slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: file }, "win32"),
+    slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: file }, "win32", join(state.dir, "config.json")),
   });
   expect(r.lines.some((l) => l.startsWith("SLACK authenticated user=U1 team=T1"))).toBe(true);
   expect(r.lines).toContain(`SLACK token-file: ${WIN32_ACL_NOTICE}`);
+  expect(r.lines.join("\n")).not.toContain("FIXTURE_SECRET");
+});
+
+test("boot refuses a token file outside this home, as launch does, before reading it", async () => {
+  const other = join(state.dir, "other-home");
+  mkdirSync(other, { recursive: true });
+  const file = join(other, "slack-token");
+  writeFileSync(file, "xoxb-FIXTURE_SECRET\n");
+  chmodSync(file, 0o600);
+  const client = () => {
+    throw new Error("no Slack client is made for a refused token file");
+  };
+  const r = await bootCheck({
+    ...bootDeps(newWorld()),
+    slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: file }, "linux", join(state.dir, "home", "config.json")),
+  });
+  expect(
+    r.lines.some((l) => l.startsWith(`SLACK token-file: DORI_SLACK_TOKEN_FILE ${file} is outside this home`)),
+  ).toBe(true);
+  expect(r.exitCode).toBe(1);
   expect(r.lines.join("\n")).not.toContain("FIXTURE_SECRET");
 });
 

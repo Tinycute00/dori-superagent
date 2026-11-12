@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
-import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { launchLane } from "../src/launch.ts";
@@ -165,21 +165,40 @@ test("an inherited DORI_SLACK_TOKEN_FILE outside this home is refused unless the
   const other = tokenFile(join(state.dir, "other-home"), "xoxb-other\n", 0o600);
   expect(() => laneTokenEnv({ DORI_SLACK_TOKEN_FILE: other }, config)).toThrow(TokenFileError);
   expect(() => laneTokenEnv({ DORI_SLACK_TOKEN_FILE: other }, config)).toThrow(/is outside this home/);
+  // Allowed by the flag, and the flag is passed empty so the lane does not carry the permission onward.
   expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: other, [OUTSIDE_HOME_FLAG]: "1" }, config)).toEqual({
     DORI_SLACK_TOKEN_FILE: other,
     DORI_SLACK_TOKEN: "",
+    [OUTSIDE_HOME_FLAG]: "",
   });
   // Unset, the home's own file is used; a file inside the home is passed as named.
-  expect(laneTokenEnv({}, config)).toEqual({ DORI_SLACK_TOKEN_FILE: join(home, "slack-token"), DORI_SLACK_TOKEN: "" });
+  const ok = (file: string) => ({ DORI_SLACK_TOKEN_FILE: file, DORI_SLACK_TOKEN: "", [OUTSIDE_HOME_FLAG]: "" });
+  expect(laneTokenEnv({}, config)).toEqual(ok(join(home, "slack-token")));
   const nested = join(home, "keys", "slack-token");
-  expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: nested }, config)).toEqual({
-    DORI_SLACK_TOKEN_FILE: nested,
-    DORI_SLACK_TOKEN: "",
-  });
+  expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: nested }, config)).toEqual(ok(nested));
+  // A file whose name starts with ".." is still inside the home.
+  const dotted = join(home, "..slack-token");
+  expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: dotted }, config)).toEqual(ok(dotted));
+  // A link inside the home to another home's file is outside: links are resolved before the check.
+  const link = join(home, "linked-token");
+  symlinkSync(other, link);
+  expect(() => laneTokenEnv({ DORI_SLACK_TOKEN_FILE: link }, config)).toThrow(/is outside this home/);
 });
 
 test("on Windows a token taken from a file comes with a notice that its ACL is not checked", () => {
   expect(tokenFileNotice({ DORI_SLACK_TOKEN_FILE: "C:\\x\\slack-token" }, "win32")).toBe(WIN32_ACL_NOTICE);
   expect(tokenFileNotice({ DORI_SLACK_TOKEN_FILE: "/x/slack-token" }, "linux")).toBeUndefined();
   expect(tokenFileNotice({ DORI_SLACK_TOKEN: "xoxb-env", DORI_SLACK_TOKEN_FILE: "C:\\x" }, "win32")).toBeUndefined();
+});
+
+test("a launch with a token file outside this home is refused before any session is created", async () => {
+  const home = join(state.dir, "launch-home");
+  const other = tokenFile(join(state.dir, "launch-other"), "xoxb-other\n", 0o600);
+  delete process.env["DORI_SLACK_TOKEN"];
+  process.env["DORI_SLACK_TOKEN_FILE"] = other;
+  delete process.env[OUTSIDE_HOME_FLAG];
+  await expect(launchArgv(home, "outside-lane")).rejects.toThrow(
+    /^token file refused: DORI_SLACK_TOKEN_FILE .* is outside this home/,
+  );
+  expect(world.calls.some((c) => c[0] === "hc" && c.includes("run"))).toBe(false);
 });

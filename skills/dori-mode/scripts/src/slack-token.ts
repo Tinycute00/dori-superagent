@@ -2,8 +2,8 @@
  * The Slack token without putting it on a command line (#200). hc passes a session's env as argv (`env K=V ...`), which
  * `ps`, `hc get` and logs show, so a lane gets the path of an owner-only token file instead of the token itself.
  */
-import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** The token file a launcher finds next to its config when DORI_SLACK_TOKEN_FILE is not set. */
 export const TOKEN_FILE_NAME = "slack-token";
@@ -76,9 +76,34 @@ export const slackToken = (
 export const tokenFileNotice = (env: Env = process.env, platform: string = process.platform): string | undefined =>
   platform === "win32" && !env["DORI_SLACK_TOKEN"] && env["DORI_SLACK_TOKEN_FILE"] ? WIN32_ACL_NOTICE : undefined;
 
+/** A path's real location: links resolved where they exist, so a link inside the home to another home's file is outside. */
+const real = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    const parent = dirname(path);
+    return parent === path ? path : join(real(parent), relative(parent, path));
+  }
+};
 const inside = (dir: string, path: string): boolean => {
-  const rel = relative(dir, path);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  const rel = relative(real(dir), real(path));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+};
+
+/**
+ * Refuses a DORI_SLACK_TOKEN_FILE outside this home (the config's directory, links resolved) unless
+ * DORI_SLACK_TOKEN_FILE_OUTSIDE_HOME=1 says it is meant: it is most likely inherited from another home's core (#200, one
+ * variable over). Launch checks it before handing the path to a lane, and boot before it authenticates with it.
+ */
+export const homeTokenFile = (env: Env, configFile: string): string | undefined => {
+  const named = env["DORI_SLACK_TOKEN_FILE"];
+  if (!named) return undefined;
+  const home = resolve(dirname(configFile));
+  const file = resolve(named);
+  if (inside(home, file) || env[OUTSIDE_HOME_FLAG] === "1") return file;
+  throw new TokenFileError(
+    `DORI_SLACK_TOKEN_FILE ${file} is outside this home (${home}), so it may be another home's; set ${OUTSIDE_HOME_FLAG}=1 if it is meant`,
+  );
 };
 
 /**
@@ -88,19 +113,17 @@ const inside = (dir: string, path: string): boolean => {
  * refuses with the path-only error. One outside the home is most likely inherited from another home's core (#200, one
  * variable over), so it is refused unless DORI_SLACK_TOKEN_FILE_OUTSIDE_HOME=1 says it was meant. With no token file at
  * all nothing is added, as before. DORI_SLACK_TOKEN is passed empty: an hc lane inherits the core's env, which may hold
- * another home's token, and a set DORI_SLACK_TOKEN is read before the file.
+ * another home's token, and a set DORI_SLACK_TOKEN is read before the file. The allow flag is passed empty too, so a
+ * lane never carries this home's permission into a home it starts.
  */
 export const laneTokenEnv = (env: Env, configFile: string): Record<string, string> => {
-  const home = resolve(dirname(configFile));
-  const named = env["DORI_SLACK_TOKEN_FILE"];
-  const pass = (file: string): Record<string, string> => ({ DORI_SLACK_TOKEN_FILE: file, DORI_SLACK_TOKEN: "" });
-  if (!named) {
-    const own = join(home, TOKEN_FILE_NAME);
-    return existsSync(own) ? pass(own) : {};
-  }
-  const file = resolve(named);
-  if (inside(home, file) || env[OUTSIDE_HOME_FLAG] === "1") return pass(file);
-  throw new TokenFileError(
-    `DORI_SLACK_TOKEN_FILE ${file} is outside this home (${home}), so it may be another home's; set ${OUTSIDE_HOME_FLAG}=1 if it is meant`,
-  );
+  const pass = (file: string): Record<string, string> => ({
+    DORI_SLACK_TOKEN_FILE: file,
+    DORI_SLACK_TOKEN: "",
+    [OUTSIDE_HOME_FLAG]: "",
+  });
+  const file = homeTokenFile(env, configFile);
+  if (file) return pass(file);
+  const own = join(resolve(dirname(configFile)), TOKEN_FILE_NAME);
+  return existsSync(own) ? pass(own) : {};
 };
