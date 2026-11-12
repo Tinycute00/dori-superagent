@@ -187,3 +187,17 @@ export const laneTokenEnv = (env: Env, configFile: string): Record<string, strin
   // No token file: nothing is added, except that an inherited allow flag is emptied so no lane carries it onward.
   return env[OUTSIDE_HOME_FLAG] ? { [OUTSIDE_HOME_FLAG]: "" } : {};
 };
+
+/**
+ * The env launch gives a lane for its token: laneTokenEnv, plus DORI_CONFIG made absolute when the launcher's was relative
+ * or not normalized, since the lane runs in another directory and must find the same home (the token-file mark is
+ * checked against it). A DORI_CONFIG whose home moves when normalized (empty, `.`, `..`) names no config file and is
+ * refused, rather than letting the home check move up a directory.
+ */
+export const laneLaunchEnv = (env: Env, rawConfig: string): Record<string, string> => {
+  const config = resolve(rawConfig);
+  if (dirname(config) !== resolve(dirname(rawConfig)))
+    throw new TokenFileError(`DORI_CONFIG "${rawConfig}" does not name a config file; set it to the config file's path`);
+  const changed = env["DORI_CONFIG"] !== undefined && env["DORI_CONFIG"] !== config;
+  return { ...laneTokenEnv(env, config), ...(changed ? { DORI_CONFIG: config } : {}) };
+};

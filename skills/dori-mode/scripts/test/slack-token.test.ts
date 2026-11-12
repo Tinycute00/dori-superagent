@@ -189,3 +189,12 @@ test("a relative DORI_CONFIG is passed to the lane absolute, so the lane finds t
   expect(create).toContain(`DORI_CONFIG=${resolve(join(home, "config.json"))}`);
   expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${real(file)}`);
 });
+
+test("a DORI_CONFIG whose home moves when normalized (empty, '.', '..') is refused instead of moving the home up", async () => {
+  delete process.env["DORI_SLACK_TOKEN"];
+  delete process.env["DORI_SLACK_TOKEN_FILE"];
+  const home = join(state.dir, "bad-config-home");
+  for (const raw of ["", ".", ".."]) {
+    await expect(launchArgv(home, `bad-${raw.length}`, raw)).rejects.toThrow(/does not name a config file/);
+  }
+});
