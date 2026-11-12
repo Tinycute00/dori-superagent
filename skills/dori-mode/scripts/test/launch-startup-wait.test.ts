@@ -236,6 +236,22 @@ test("on hc, a program that has not reported a status yet is waited for, and one
   expect(await launch("hc-filled", { ...atWidth, cols: 20, screen: filled })).toBe(
     "STARTUP_ERROR hc-filled t1: No API key",
   );
+  // The everyday-word phrases glued onto a pane-wide line still count, as a provider prints them.
+  for (const [i, line] of ["Rate limit exceeded", "Quota exceeded for model", "Usage limit reached"].entries()) {
+    const glued = `Loading providers ok\n${line}\n$ `;
+    expect(await launch(`hc-glue-${i}`, { ...atWidth, cols: 20, screen: glued })).toStartWith(
+      `STARTUP_ERROR hc-glue-${i} t1: `,
+    );
+  }
+  // Identifiers that end in an error code's name are no failure; the bare codes are.
+  for (const [i, text] of ["const e = isQuotaExceeded(r);", "handler: onRateLimitExceeded"].entries()) {
+    expect(await launch(`hc-ident-${i}`, { ...atWidth, screen: `${text}\n❯ \n Pursuing goal (1m)` })).toBe(
+      `STARTUP_OK hc-ident-${i} t1`,
+    );
+  }
+  expect(await launch("hc-upper", { ...atWidth, screen: "error: QUOTA_EXCEEDED\n$ " })).toBe(
+    "STARTUP_ERROR hc-upper t1: QUOTA_EXCEEDED",
+  );
   // Provider error codes with no message still count.
   for (const [code, want] of [
     ["error: insufficient_quota", "insufficient_quota"],
