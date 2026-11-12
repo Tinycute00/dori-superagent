@@ -185,6 +185,18 @@ test("an inherited DORI_SLACK_TOKEN_FILE outside this home is refused unless the
   expect(() => laneTokenEnv({ DORI_SLACK_TOKEN_FILE: link }, config)).toThrow(/is outside this home/);
 });
 
+test("the home's own slack-token gets the same link check, and an inherited allow flag never reaches a lane", () => {
+  const other = tokenFile(join(state.dir, "far-home"), "xoxb-far\n", 0o600);
+  const linked = join(state.dir, "linked-home");
+  mkdirSync(linked, { recursive: true });
+  symlinkSync(other, join(linked, "slack-token"));
+  expect(() => laneTokenEnv({}, join(linked, "config.json"))).toThrow(/links outside this home/);
+  // With no token file at all, nothing is added except emptying an inherited allow flag.
+  const bare = join(state.dir, "bare-home", "config.json");
+  expect(laneTokenEnv({}, bare)).toEqual({});
+  expect(laneTokenEnv({ [OUTSIDE_HOME_FLAG]: "1" }, bare)).toEqual({ [OUTSIDE_HOME_FLAG]: "" });
+});
+
 test("on Windows a token taken from a file comes with a notice that its ACL is not checked", () => {
   expect(tokenFileNotice({ DORI_SLACK_TOKEN_FILE: "C:\\x\\slack-token" }, "win32")).toBe(WIN32_ACL_NOTICE);
   expect(tokenFileNotice({ DORI_SLACK_TOKEN_FILE: "/x/slack-token" }, "linux")).toBeUndefined();

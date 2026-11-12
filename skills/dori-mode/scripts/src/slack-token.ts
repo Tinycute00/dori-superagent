@@ -124,6 +124,14 @@ export const laneTokenEnv = (env: Env, configFile: string): Record<string, strin
   });
   const file = homeTokenFile(env, configFile);
   if (file) return pass(file);
-  const own = join(resolve(dirname(configFile)), TOKEN_FILE_NAME);
-  return existsSync(own) ? pass(own) : {};
+  const home = resolve(dirname(configFile));
+  const own = join(home, TOKEN_FILE_NAME);
+  if (existsSync(own)) {
+    // The home's own file gets the same check as a named one: a link from it to another home's file is outside.
+    if (!inside(home, own))
+      throw new TokenFileError(`${own} links outside this home (${home}), so it may be another home's token file`);
+    return pass(own);
+  }
+  // No token file: nothing is added, except that an inherited allow flag is emptied so no lane carries it onward.
+  return env[OUTSIDE_HOME_FLAG] ? { [OUTSIDE_HOME_FLAG]: "" } : {};
 };
