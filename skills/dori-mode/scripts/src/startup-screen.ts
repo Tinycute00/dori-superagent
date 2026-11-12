@@ -45,9 +45,10 @@ const JOINS = /[a-z0-9_/\\.-]/i;
 /**
  * A `word` match stands alone when nothing in JOINS touches its end (a `.` only when a word goes on: `reached.` ends a
  * sentence, `limited.md` is a file), and nothing touches its start, except when a join glued it onto a pane-wide line,
- * whatever that line ended in (`ok`, `....`, `----`, a path). Then it must read as printed text: it starts with a
- * capital and has a space (`...okRate limit reached`), which camelCase (`onRateLimitExceeded`) and lower-case names
- * (`fix-rate-limit-error`) never are.
+ * whatever that line ended in (`ok`, `....`, `----`, a path) except `_`, which makes it part of a name
+ * (`foo_Rate limit`). Then it must read as printed text: it starts with a capital and has a space
+ * (`...okRate limit reached`), which camelCase (`onRateLimitExceeded`) and lower-case names (`fix-rate-limit-error`)
+ * never are.
  */
 const standsAlone = (text: string, at: number, found: string): boolean => {
   const after = text[at + found.length] ?? "";
