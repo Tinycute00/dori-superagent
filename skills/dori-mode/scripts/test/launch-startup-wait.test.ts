@@ -226,4 +226,24 @@ test("on hc, a program that has not reported a status yet is waited for, and one
   expect(await launch("hc-quotas", { ...atWidth, screen: "Error: all quotas exhausted\n$ " })).toBe(
     "STARTUP_ERROR hc-quotas t1: quotas",
   );
+  // A Windows path from Bun: a dotted directory between backslashes is not the end of the path either.
+  const winPath = `${longWarning} imported from C:\\Users\\anna.tsai\\.omo\\agent\\extensions\\quota-meter\\index.js`;
+  expect(await launch("hc-win", { ...atWidth, screen: `${winPath}\n❯ \n Pursuing goal (1m)` })).toBe(
+    "STARTUP_OK hc-win t1",
+  );
+  // A printed line exactly as wide as the pane is joined to the next one; a failure glued on after a letter still counts.
+  const filled = "Loading providers ok\nNo API key found\n$ ";
+  expect(await launch("hc-filled", { ...atWidth, cols: 20, screen: filled })).toBe(
+    "STARTUP_ERROR hc-filled t1: No API key",
+  );
+  // Provider error codes with no message still count.
+  for (const [code, want] of [
+    ["error: insufficient_quota", "insufficient_quota"],
+    ["code=quotaExceeded", "quotaExceeded"],
+    ["429 from the rate limiter", "rate limiter"],
+  ] as const) {
+    expect(await launch(`hc-code-${want.length}`, { ...atWidth, screen: `${code}\n$ ` })).toBe(
+      `STARTUP_ERROR hc-code-${want.length} t1: ${want}`,
+    );
+  }
 });
