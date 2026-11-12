@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative } from "node:path";
 
 import { launchLane } from "../src/launch.ts";
 import { laneTokenEnv, OUTSIDE_HOME_FLAG, RESOLVED_HOME, RESOLVED_MARK, TokenFileError } from "../src/slack-token.ts";
@@ -186,7 +186,7 @@ test("a relative DORI_CONFIG is passed to the lane absolute, so the lane finds t
   delete process.env["DORI_SLACK_TOKEN_FILE"];
   const calls = await launchArgv(home, "relconf-lane", relative(process.cwd(), join(home, "config.json")));
   const create = calls.find((c) => c[0] === "hc" && c.includes("--bg")) ?? [];
-  expect(create).toContain(`DORI_CONFIG=${resolve(join(home, "config.json"))}`);
+  expect(create).toContain(`DORI_CONFIG=${join(process.cwd(), relative(process.cwd(), join(home, "config.json")))}`);
   expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${real(file)}`);
 });
 
@@ -197,4 +197,14 @@ test("a DORI_CONFIG whose home moves when normalized (empty, '.', '..') is refus
   for (const raw of ["", ".", ".."]) {
     await expect(launchArgv(home, `bad-${raw.length}`, raw)).rejects.toThrow(/does not name a config file/);
   }
+});
+
+test("an absolute DORI_CONFIG reaches the lane unchanged, so a link in it resolves for the lane as it did for the launcher", async () => {
+  delete process.env["DORI_SLACK_TOKEN"];
+  delete process.env["DORI_SLACK_TOKEN_FILE"];
+  const home = join(state.dir, "abs-home");
+  mkdirSync(home, { recursive: true });
+  const raw = `${home}/sub/../config.json`;
+  const create = (await launchArgv(home, "abs-lane", raw)).find((c) => c[0] === "hc" && c.includes("--bg")) ?? [];
+  expect(create.some((arg) => arg.startsWith("DORI_CONFIG="))).toBe(false);
 });

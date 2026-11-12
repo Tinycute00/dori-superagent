@@ -189,9 +189,8 @@ export const laneTokenEnv = (env: Env, configFile: string): Record<string, strin
 };
 
 /**
- * The env launch gives a lane for its token: laneTokenEnv, plus DORI_CONFIG made absolute when the launcher's was relative
- * or not normalized, since the lane runs in another directory and must find the same home (the token-file mark is
- * checked against it). A DORI_CONFIG whose home moves when normalized (empty, `.`, `..`) names no config file and is
+ * The env launch gives a lane for its token: laneTokenEnv, plus DORI_CONFIG made absolute when the launcher's was relative,
+ * since the lane runs in another directory and must find the same home (the token-file mark is checked against it). A DORI_CONFIG whose home moves when normalized (empty, `.`, `..`) names no config file and is
  * refused, rather than letting the home check move up a directory.
  */
 export const laneLaunchEnv = (env: Env, rawConfig: string): Record<string, string> => {
@@ -200,6 +199,9 @@ export const laneLaunchEnv = (env: Env, rawConfig: string): Record<string, strin
     throw new TokenFileError(
       `DORI_CONFIG "${rawConfig}" does not name a config file; set it to the config file's path`,
     );
-  const changed = env["DORI_CONFIG"] !== undefined && env["DORI_CONFIG"] !== config;
-  return { ...laneTokenEnv(env, config), ...(changed ? { DORI_CONFIG: config } : {}) };
+  // Only a RELATIVE DORI_CONFIG is rewritten, and only by putting the launcher's cwd in front: the OS then resolves it
+  // (links, `..`) exactly as the launcher's own config load did. An absolute one reaches the lane unchanged.
+  const raw = env["DORI_CONFIG"];
+  const relativeConfig = raw !== undefined && !isAbsolute(raw);
+  return { ...laneTokenEnv(env, config), ...(relativeConfig ? { DORI_CONFIG: join(process.cwd(), raw) } : {}) };
 };
