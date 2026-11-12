@@ -190,6 +190,21 @@ test("on hc, a program that has not reported a status yet is waited for, and one
   const limited = wrap("Error from provider: rate limit reached, retry later", 26);
   expect(limited.split("\n")[0]).toBe("Error from provider: rate");
   expect(await launch("hc-split", { ...atWidth, cols: 26, screen: `${limited}\n$ ` })).toBe(
-    "STARTUP_ERROR hc-split t1: ratelimit", // the phrase as the joined screen shows it
+    "STARTUP_ERROR hc-split t1: rate limit",
   );
+  // A failure glued onto the end of the extension path by a join still counts, after either tail form.
+  const glued = `${exact} imported from /x/extensions/quota-meter/index.jsNo API key found\n$ `;
+  expect(await launch("hc-glued", { ...atWidth, screen: glued })).toBe("STARTUP_ERROR hc-glued t1: No API key");
+  // An unquoted path with a space in it is still the warning's own.
+  const spacedPath = `${longWarning} imported from /Users/John Doe/.omo/agent/extensions/quota-meter/index.js`;
+  expect(await launch("hc-spaced", { ...atWidth, screen: `${spacedPath}\n❯ \n Pursuing goal (1m)` })).toBe(
+    "STARTUP_OK hc-spaced t1",
+  );
+  // Code and names that only look like a failure once the gap is gone are no failure: rateLimit, ratelimiter, noApiKey.
+  const code = "const rateLimit = ratelimiter(noApiKey, usageLimit); // SessionCrashed\n❯ \n Pursuing goal (1m)";
+  expect(await launch("hc-code", { ...atWidth, screen: code })).toBe("STARTUP_OK hc-code t1");
+  // A real line break between two words is two lines, not a failure: moderate / limits.
+  expect(
+    await launch("hc-break", { ...atWidth, screen: "load is moderate\nlimits apply\n❯ \n Pursuing goal (1m)" }),
+  ).toBe("STARTUP_OK hc-break t1");
 });

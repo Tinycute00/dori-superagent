@@ -10,6 +10,7 @@ import { Reports } from "./reports.ts";
 import { doneSyntaxErrors } from "./signals.ts";
 import type { BudgetLimits } from "./supervision-observe.ts";
 import { Lessons, renderLessons } from "./lessons.ts";
+import { startupFailure, startupScreen } from "./startup-screen.ts";
 
 export type LaunchInput = {
   readonly key: string;
@@ -25,23 +26,6 @@ export type LaunchInput = {
 
 export class LaunchError extends Error {}
 
-// Every gap between words is optional whitespace: hc cuts the space a wrap falls on, so a joined line can read `ratelimit`.
-const STARTUP_FAILURE =
-  /Cannot\s*find\s*module|All\s*fallback\s*models\s*failed|No\s*API\s*key|model_not_available|usage\s*limit|rate\s*limit|quota|Session\s*crashed|unknown\s*provider/i;
-// omo warns about a user extension it cannot load (`Warning: Failed to load extension "...": ... Cannot find module ...`)
-// and starts anyway (#202). Only the warning's own text is removed, never the rest of its line: a row-wrap join can put a
-// real failure on the same line. The path may hold the newline of a row the join missed, and a space cut at a wrap may
-// be gone, so every gap between words is optional whitespace. Bun goes on with ` imported from <path>` or ` from '<path>'`;
-// that path is the extension's own, so it is part of the warning too (a directory named `quota-meter` is not a failure).
-const EXTENSION_WARNING =
-  /Warning:\s*Failed\s*to\s*load\s*extension\s*"[^"]*":\s*(?:Failed\s*to\s*load\s*extension:\s*)?Cannot\s*find\s*module\s*'[^']*'(?:\s*(?:imported\s*)?from\s*(?:'[^']*'|"[^"]*"|\S+))?/g;
-// A real warning names the extension's full path, so a narrow pane wraps it and `Cannot find module` lands on a later
-// row. The startup checks therefore read the screen unwrapped: one line per line the agent printed.
-const startupScreen = (rts: Runtimes, ref: SessionRef): Promise<string> =>
-  rts.for(ref).read(ref, 40, { unwrapped: true });
-/** The failure phrase found, its gaps shown as one space (a match can span a cut space or a missed row break). */
-const startupFailure = (screen: string): string | null =>
-  STARTUP_FAILURE.exec(screen.replace(EXTENSION_WARNING, ""))?.[0].replace(/\s+/g, " ") ?? null;
 // The first check is 20 s after start, then the screen and status are re-read every 10 s until `startupWaitSeconds`.
 const FIRST_CHECK_MS = 20_000;
 const RECHECK_MS = 10_000;
