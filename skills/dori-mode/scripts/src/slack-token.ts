@@ -199,9 +199,9 @@ export const laneLaunchEnv = (env: Env, rawConfig: string): Record<string, strin
     throw new TokenFileError(
       `DORI_CONFIG "${rawConfig}" does not name a config file; set it to the config file's path`,
     );
-  // Only a RELATIVE DORI_CONFIG is rewritten, and only by putting the launcher's cwd in front: the OS then resolves it
-  // (links, `..`) exactly as the launcher's own config load did. An absolute one reaches the lane unchanged.
+  // Only a RELATIVE DORI_CONFIG is rewritten, and only by putting the launcher's cwd in front as text (never path.join,
+  // which collapses `..` on paper): the OS then resolves it (links, `..`) exactly as the launcher's own config load did. An absolute one reaches the lane unchanged.
   const raw = env["DORI_CONFIG"];
   const relativeConfig = raw !== undefined && !isAbsolute(raw);
-  return { ...laneTokenEnv(env, config), ...(relativeConfig ? { DORI_CONFIG: join(process.cwd(), raw) } : {}) };
+  return { ...laneTokenEnv(env, config), ...(relativeConfig ? { DORI_CONFIG: `${process.cwd()}${sep}${raw}` } : {}) };
 };

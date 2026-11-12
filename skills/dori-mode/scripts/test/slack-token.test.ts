@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 
 import { launchLane } from "../src/launch.ts";
 import { laneTokenEnv, OUTSIDE_HOME_FLAG, RESOLVED_HOME, RESOLVED_MARK, TokenFileError } from "../src/slack-token.ts";
@@ -186,7 +186,7 @@ test("a relative DORI_CONFIG is passed to the lane absolute, so the lane finds t
   delete process.env["DORI_SLACK_TOKEN_FILE"];
   const calls = await launchArgv(home, "relconf-lane", relative(process.cwd(), join(home, "config.json")));
   const create = calls.find((c) => c[0] === "hc" && c.includes("--bg")) ?? [];
-  expect(create).toContain(`DORI_CONFIG=${join(process.cwd(), relative(process.cwd(), join(home, "config.json")))}`);
+  expect(create).toContain(`DORI_CONFIG=${process.cwd()}${sep}${relative(process.cwd(), join(home, "config.json"))}`);
   expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${real(file)}`);
 });
 
@@ -207,4 +207,15 @@ test("an absolute DORI_CONFIG reaches the lane unchanged, so a link in it resolv
   const raw = `${home}/sub/../config.json`;
   const create = (await launchArgv(home, "abs-lane", raw)).find((c) => c[0] === "hc" && c.includes("--bg")) ?? [];
   expect(create.some((arg) => arg.startsWith("DORI_CONFIG="))).toBe(false);
+});
+
+test("a relative DORI_CONFIG with '..' keeps it, so the OS follows a link in it for the lane as it did for the launcher", async () => {
+  delete process.env["DORI_SLACK_TOKEN"];
+  delete process.env["DORI_SLACK_TOKEN_FILE"];
+  const home = join(state.dir, "dotdot-home");
+  mkdirSync(join(home, "sub"), { recursive: true });
+  const raw = `${relative(process.cwd(), join(home, "sub"))}${sep}..${sep}config.json`;
+  const create = (await launchArgv(home, "dotdot-lane", raw)).find((c) => c[0] === "hc" && c.includes("--bg")) ?? [];
+  // Not collapsed on paper: the '..' is still there for the OS to resolve.
+  expect(create).toContain(`DORI_CONFIG=${process.cwd()}${sep}${raw}`);
 });
