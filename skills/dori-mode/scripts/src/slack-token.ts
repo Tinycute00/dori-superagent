@@ -2,7 +2,7 @@
  * The Slack token without putting it on a command line (#200). hc passes a session's env as argv (`env K=V ...`), which
  * `ps`, `hc get` and logs show, so a lane gets the path of an owner-only token file instead of the token itself.
  */
-import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** The token file a launcher finds next to its config when DORI_SLACK_TOKEN_FILE is not set. */
@@ -76,17 +76,27 @@ export const slackToken = (
 export const tokenFileNotice = (env: Env = process.env, platform: string = process.platform): string | undefined =>
   platform === "win32" && !env["DORI_SLACK_TOKEN"] && env["DORI_SLACK_TOKEN_FILE"] ? WIN32_ACL_NOTICE : undefined;
 
-/** A path's real location: links resolved where they exist, so a link inside the home to another home's file is outside. */
+/**
+ * A path's real location: links resolved where they exist, so a link inside the home to another home's file is outside.
+ * A missing path resolves through its parent. A link whose target does not exist is refused: the lane would follow it
+ * wherever it later points.
+ */
 const real = (path: string): string => {
   try {
     return realpathSync(path);
   } catch {
+    let link = false;
+    try {
+      link = lstatSync(path).isSymbolicLink();
+    } catch {}
+    if (link) throw new TokenFileError(`${path} is a link whose target does not exist`);
     const parent = dirname(path);
     return parent === path ? path : join(real(parent), relative(parent, path));
   }
 };
+/** Whether an already-resolved path is inside an already-resolved directory. */
 const inside = (dir: string, path: string): boolean => {
-  const rel = relative(real(dir), real(path));
+  const rel = relative(dir, path);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 };
 
@@ -98,10 +108,10 @@ const inside = (dir: string, path: string): boolean => {
 export const homeTokenFile = (env: Env, configFile: string): string | undefined => {
   const named = env["DORI_SLACK_TOKEN_FILE"];
   if (!named) return undefined;
-  const home = resolve(dirname(configFile));
-  const file = resolve(named);
-  // The resolved path is what the lane gets: a link swapped after this check is never followed by the lane.
-  if (inside(home, file) || env[OUTSIDE_HOME_FLAG] === "1") return real(file);
+  const home = real(resolve(dirname(configFile)));
+  // Resolved once: the string checked is the string the lane gets, so a link swapped later is never followed.
+  const file = real(resolve(named));
+  if (inside(home, file) || env[OUTSIDE_HOME_FLAG] === "1") return file;
   throw new TokenFileError(
     `DORI_SLACK_TOKEN_FILE ${file} is outside this home (${home}), so it may be another home's; set ${OUTSIDE_HOME_FLAG}=1 if it is meant`,
   );
@@ -125,13 +135,14 @@ export const laneTokenEnv = (env: Env, configFile: string): Record<string, strin
   });
   const file = homeTokenFile(env, configFile);
   if (file) return pass(file);
-  const home = resolve(dirname(configFile));
+  const home = real(resolve(dirname(configFile)));
   const own = join(home, TOKEN_FILE_NAME);
   if (existsSync(own)) {
-    // The home's own file gets the same check as a named one: a link from it to another home's file is outside.
-    if (!inside(home, own))
+    // The home's own file gets the same check as a named one, on the one resolved string the lane also gets.
+    const resolved = real(own);
+    if (!inside(home, resolved))
       throw new TokenFileError(`${own} links outside this home (${home}), so it may be another home's token file`);
-    return pass(real(own));
+    return pass(resolved);
   }
   // No token file: nothing is added, except that an inherited allow flag is emptied so no lane carries it onward.
   return env[OUTSIDE_HOME_FLAG] ? { [OUTSIDE_HOME_FLAG]: "" } : {};

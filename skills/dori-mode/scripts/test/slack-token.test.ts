@@ -206,6 +206,20 @@ test("the home's own slack-token gets the same link check, and an inherited allo
   expect(passed).toBe(realpathSync(target));
   const named = laneTokenEnv({ DORI_SLACK_TOKEN_FILE: join(homeL, "slack-token") }, join(homeL, "config.json"));
   expect(named["DORI_SLACK_TOKEN_FILE"]).toBe(realpathSync(target));
+  // The path is resolved once: the string checked is the string passed, so no swap between two resolutions reaches the lane.
+  const spy = spyOn(fs, "realpathSync");
+  try {
+    laneTokenEnv({ DORI_SLACK_TOKEN_FILE: join(homeL, "slack-token") }, join(homeL, "config.json"));
+    expect(spy.mock.calls.filter(([p]) => String(p).endsWith(`${"relink-home"}/slack-token`)).length).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
+  // A named link whose target does not exist yet is refused: the lane would follow it wherever it later points.
+  const dangling = join(homeL, "dl");
+  symlinkSync(join(state.dir, "not-yet", "slack-token"), dangling);
+  expect(() => laneTokenEnv({ DORI_SLACK_TOKEN_FILE: dangling }, join(homeL, "config.json"))).toThrow(
+    /is a link whose target does not exist/,
+  );
 });
 
 test("on Windows a token taken from a file comes with a notice that its ACL is not checked", () => {

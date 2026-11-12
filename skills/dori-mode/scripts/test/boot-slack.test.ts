@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bootCheck, envSlackCheck, slackAuthCheck } from "../src/boot.ts";
 import { Slack } from "../src/messenger/slack.ts";
@@ -127,7 +127,9 @@ test("boot refuses a token file outside this home, as launch does, before readin
     slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: file }, "linux", join(state.dir, "home", "config.json")),
   });
   expect(
-    r.lines.some((l) => l.startsWith(`SLACK token-file: DORI_SLACK_TOKEN_FILE ${file} is outside this home`)),
+    r.lines.some((l) =>
+      l.startsWith(`SLACK token-file: DORI_SLACK_TOKEN_FILE ${realpathSync(file)} is outside this home`),
+    ),
   ).toBe(true);
   expect(r.exitCode).toBe(1);
   expect(r.lines.join("\n")).not.toContain("FIXTURE_SECRET");
