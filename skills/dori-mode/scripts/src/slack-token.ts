@@ -78,18 +78,22 @@ export const slackToken = (
 
 /** Set by launch beside DORI_SLACK_TOKEN_FILE to the same string: the path a lane gets is already resolved. */
 export const RESOLVED_MARK = "DORI_SLACK_TOKEN_FILE_RESOLVED";
+/** Set by launch to the (resolved) home whose check that path passed; the mark holds only in that same home. */
+export const RESOLVED_HOME = "DORI_SLACK_TOKEN_FILE_HOME";
 
 /**
  * The token file a reader opens, resolved exactly once. A lane's path was resolved and home-checked by its launcher,
- * which marks it (RESOLVED_MARK equal to the path), so the lane opens that string as it is: resolving it again would
- * follow a link put there since. Any other path (the lead's own setting, `dori boot`, `dori send`) is resolved once
- * here and home-checked (homeTokenFile), and that same string is the one read. A stale inherited mark only matches when
- * the path is the very string it marked, and then reading it as-is is the stricter choice.
+ * which marks it (RESOLVED_MARK equal to the path, RESOLVED_HOME the home it was checked for), so a reader in that same
+ * home opens the string as it is: resolving it again would follow a link put there since. The mark holds only in that
+ * home: an env inherited into another home (#200) carries home A's mark, which home B ignores, so B resolves and
+ * home-checks the path itself and refuses A's file. Any unmarked path (the lead's own setting, `dori boot`, `dori send`)
+ * is resolved once here and home-checked (homeTokenFile), and that same string is the one read.
  */
 export const tokenFileToRead = (env: Env, configFile: string): string | undefined => {
   const named = env["DORI_SLACK_TOKEN_FILE"];
   if (!named) return undefined;
-  return env[RESOLVED_MARK] === named ? named : homeTokenFile(env, configFile);
+  const marked = env[RESOLVED_MARK] === named && env[RESOLVED_HOME] === real(resolve(dirname(configFile)));
+  return marked ? named : homeTokenFile(env, configFile);
 };
 
 /** Boot's note about a token taken from a file on Windows, whose ACL nothing checks; undefined everywhere else. */
@@ -165,6 +169,7 @@ export const laneTokenEnv = (env: Env, configFile: string): Record<string, strin
   const pass = (file: string): Record<string, string> => ({
     DORI_SLACK_TOKEN_FILE: file,
     [RESOLVED_MARK]: file,
+    [RESOLVED_HOME]: real(resolve(dirname(configFile))),
     DORI_SLACK_TOKEN: "",
     [OUTSIDE_HOME_FLAG]: "",
   });

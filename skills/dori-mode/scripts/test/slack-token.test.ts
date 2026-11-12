@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "
 import { join, relative } from "node:path";
 
 import { launchLane } from "../src/launch.ts";
-import { laneTokenEnv, OUTSIDE_HOME_FLAG, RESOLVED_MARK, TokenFileError } from "../src/slack-token.ts";
+import { laneTokenEnv, OUTSIDE_HOME_FLAG, RESOLVED_HOME, RESOLVED_MARK, TokenFileError } from "../src/slack-token.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
 
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
@@ -108,6 +108,7 @@ test("an inherited DORI_SLACK_TOKEN_FILE outside this home is refused unless the
   expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: other, [OUTSIDE_HOME_FLAG]: "1" }, config)).toEqual({
     DORI_SLACK_TOKEN_FILE: real(other),
     [RESOLVED_MARK]: real(other),
+    [RESOLVED_HOME]: real(home),
     DORI_SLACK_TOKEN: "",
     [OUTSIDE_HOME_FLAG]: "",
   });
@@ -115,6 +116,7 @@ test("an inherited DORI_SLACK_TOKEN_FILE outside this home is refused unless the
   const ok = (file: string) => ({
     DORI_SLACK_TOKEN_FILE: real(file),
     [RESOLVED_MARK]: real(file),
+    [RESOLVED_HOME]: real(home),
     DORI_SLACK_TOKEN: "",
     [OUTSIDE_HOME_FLAG]: "",
   });

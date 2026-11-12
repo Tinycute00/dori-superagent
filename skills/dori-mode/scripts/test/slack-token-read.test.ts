@@ -59,10 +59,11 @@ test("a link loop is named as a loop, and a link put at the resolved name after 
   const file = tokenFile(join(dir, "real"), "xoxb-own\n", 0o600);
   const planted = tokenFile(join(dir, "planted"), "xoxb-planted\n", 0o600);
   const lane = laneTokenEnv({ DORI_SLACK_TOKEN_FILE: file }, join(dir, "config.json"));
-  expect(read(lane, "linux", process.getuid?.())).toBe("xoxb-own");
+  const inLane = () => slackToken(lane, "linux", process.getuid?.(), join(dir, "config.json"));
+  expect(inLane()).toBe("xoxb-own");
   renameSync(file, `${file}.moved`);
   symlinkSync(planted, file);
-  expect(() => read(lane, "linux", process.getuid?.())).toThrow(/cannot be read/);
+  expect(inLane).toThrow(/cannot be read/);
 });
 
 test("a token-file link the user set up is resolved once by the reader, and that same string is checked and read", () => {
@@ -126,4 +127,18 @@ test("on Windows a token taken from a file comes with a notice that its ACL is n
   expect(tokenFileNotice({ DORI_SLACK_TOKEN_FILE: "C:\\x\\slack-token" }, "win32")).toBe(WIN32_ACL_NOTICE);
   expect(tokenFileNotice({ DORI_SLACK_TOKEN_FILE: "/x/slack-token" }, "linux")).toBeUndefined();
   expect(tokenFileNotice({ DORI_SLACK_TOKEN: "xoxb-env", DORI_SLACK_TOKEN_FILE: "C:\\x" }, "win32")).toBeUndefined();
+});
+
+test("a lane env inherited into another home is not trusted there: home B refuses home A's marked token file (#200)", () => {
+  const homeA = join(base(), "home-a");
+  const fileA = tokenFile(homeA, "xoxb-home-A\n", 0o600);
+  const laneOfA = laneTokenEnv({ DORI_SLACK_TOKEN_FILE: fileA }, join(homeA, "config.json"));
+  // In home A the marked path is read as it is.
+  expect(slackToken(laneOfA, "linux", process.getuid?.(), join(homeA, "config.json"))).toBe("xoxb-home-A");
+  // In home B the same env is checked like any unmarked path, and A's file is outside B.
+  const homeB = join(base(), "home-b");
+  mkdirSync(homeB, { recursive: true });
+  expect(() => slackToken(laneOfA, "linux", process.getuid?.(), join(homeB, "config.json"))).toThrow(
+    /is outside this home/,
+  );
 });
