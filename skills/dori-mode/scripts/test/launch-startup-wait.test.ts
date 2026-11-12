@@ -207,4 +207,23 @@ test("on hc, a program that has not reported a status yet is waited for, and one
   expect(
     await launch("hc-break", { ...atWidth, screen: "load is moderate\nlimits apply\n❯ \n Pursuing goal (1m)" }),
   ).toBe("STARTUP_OK hc-break t1");
+  // A directory with a script-like name (anna.tsai/, node.js/) is part of the path, not its end.
+  for (const [i, dir] of ["/Users/anna.tsai", "/opt/node.js"].entries()) {
+    const path = `${longWarning} imported from ${dir}/.omo/agent/extensions/quota-meter/index.js`;
+    expect(await launch(`hc-dir-${i}`, { ...atWidth, screen: `${path}\n❯ \n Pursuing goal (1m)` })).toBe(
+      `STARTUP_OK hc-dir-${i} t1`,
+    );
+  }
+  // A phrase is a whole word: quotaUsed and "moderate limits" are no failure; "rate limited" and "quotas" are.
+  for (const [i, text] of ["const quotaUsed = 3;", "load is moderate limits apply", "my_quota_check"].entries()) {
+    expect(await launch(`hc-word-${i}`, { ...atWidth, screen: `${text}\n❯ \n Pursuing goal (1m)` })).toBe(
+      `STARTUP_OK hc-word-${i} t1`,
+    );
+  }
+  expect(await launch("hc-limited", { ...atWidth, screen: "Error: rate limited by provider\n$ " })).toBe(
+    "STARTUP_ERROR hc-limited t1: rate limited",
+  );
+  expect(await launch("hc-quotas", { ...atWidth, screen: "Error: all quotas exhausted\n$ " })).toBe(
+    "STARTUP_ERROR hc-quotas t1: quotas",
+  );
 });
