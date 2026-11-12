@@ -72,7 +72,7 @@ test("a token-file link the user set up is resolved once by the reader, and that
   const link = join(dir, "my-token");
   symlinkSync(target, link);
   const config = join(dir, "config.json");
-  const resolved = spyOn(fs, "realpathSync");
+  const resolved = spyOn(fs.realpathSync, "native");
   try {
     expect(slackToken({ DORI_SLACK_TOKEN_FILE: link }, "linux", process.getuid?.(), config)).toBe("xoxb-linked");
     expect(resolved.mock.calls.filter(([p]) => String(p) === link).length).toBe(1);
@@ -141,4 +141,16 @@ test("a lane env inherited into another home is not trusted there: home B refuse
   expect(() => slackToken(laneOfA, "linux", process.getuid?.(), join(homeB, "config.json"))).toThrow(
     /is outside this home/,
   );
+});
+
+test("a token path with '..' after a link is home-checked where the OS opens it, not where the text points", () => {
+  const home = join(base(), "dd-home");
+  const elsewhere = join(base(), "dd-elsewhere");
+  mkdirSync(join(elsewhere, "deep"), { recursive: true });
+  tokenFile(elsewhere, "xoxb-elsewhere\n", 0o600);
+  tokenFile(home, "xoxb-home\n", 0o600);
+  symlinkSync(join(elsewhere, "deep"), join(home, "link"));
+  // On paper home/link/../slack-token is home/slack-token; the OS opens elsewhere/slack-token, outside the home.
+  const raw = `${home}/link/../slack-token`;
+  expect(() => laneTokenEnv({ DORI_SLACK_TOKEN_FILE: raw }, join(home, "config.json"))).toThrow(/is outside this home/);
 });

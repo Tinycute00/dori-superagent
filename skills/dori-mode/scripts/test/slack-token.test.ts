@@ -152,7 +152,7 @@ test("the home's own slack-token gets the same link check, and an inherited allo
   const named = laneTokenEnv({ DORI_SLACK_TOKEN_FILE: join(homeL, "slack-token") }, join(homeL, "config.json"));
   expect(named["DORI_SLACK_TOKEN_FILE"]).toBe(realpathSync(target));
   // The path is resolved once: the string checked is the string passed, so no swap between two resolutions reaches the lane.
-  const spy = spyOn(fs, "realpathSync");
+  const spy = spyOn(fs.realpathSync, "native");
   try {
     laneTokenEnv({ DORI_SLACK_TOKEN_FILE: join(homeL, "slack-token") }, join(homeL, "config.json"));
     expect(spy.mock.calls.filter(([p]) => String(p).endsWith(`${"relink-home"}/slack-token`)).length).toBe(1);
@@ -217,5 +217,21 @@ test("a relative DORI_CONFIG with '..' keeps it, so the OS follows a link in it 
   const raw = `${relative(process.cwd(), join(home, "sub"))}${sep}..${sep}config.json`;
   const create = (await launchArgv(home, "dotdot-lane", raw)).find((c) => c[0] === "hc" && c.includes("--bg")) ?? [];
   // Not collapsed on paper: the '..' is still there for the OS to resolve.
+  expect(create).toContain(`DORI_CONFIG=${process.cwd()}${sep}${raw}`);
+});
+
+test("with a real link, 'link/../config.json' opens far's config, and far is the token home for launcher and lane alike", async () => {
+  delete process.env["DORI_SLACK_TOKEN"];
+  delete process.env["DORI_SLACK_TOKEN_FILE"];
+  const near = join(state.dir, "near");
+  const far = join(state.dir, "far");
+  mkdirSync(join(far, "a"), { recursive: true });
+  writeFileSync(join(far, "config.json"), "{}");
+  const farToken = tokenFile(far, "xoxb-far\n", 0o600);
+  tokenFile(near, "xoxb-near\n", 0o600);
+  symlinkSync(join(far, "a"), join(near, "link"));
+  const raw = `${relative(process.cwd(), near)}${sep}link${sep}..${sep}config.json`;
+  const create = (await launchArgv(near, "link-lane", raw)).find((c) => c[0] === "hc" && c.includes("--bg")) ?? [];
+  expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${realpathSync(farToken)}`);
   expect(create).toContain(`DORI_CONFIG=${process.cwd()}${sep}${raw}`);
 });

@@ -92,7 +92,7 @@ export const RESOLVED_HOME = "DORI_SLACK_TOKEN_FILE_HOME";
 export const tokenFileToRead = (env: Env, configFile: string): string | undefined => {
   const named = env["DORI_SLACK_TOKEN_FILE"];
   if (!named) return undefined;
-  const marked = env[RESOLVED_MARK] === named && env[RESOLVED_HOME] === real(resolve(dirname(configFile)));
+  const marked = env[RESOLVED_MARK] === named && env[RESOLVED_HOME] === homeOf(configFile);
   return marked ? named : homeTokenFile(env, configFile);
 };
 
@@ -107,7 +107,7 @@ export const tokenFileNotice = (env: Env = process.env, platform: string = proce
  */
 const real = (path: string): string => {
   try {
-    return realpathSync(path);
+    return realpathSync.native(path);
   } catch {
     let link = false;
     try {
@@ -116,7 +116,7 @@ const real = (path: string): string => {
     if (link) {
       let loop = false;
       try {
-        realpathSync(path);
+        realpathSync.native(path);
       } catch (e) {
         loop = (e as NodeJS.ErrnoException).code === "ELOOP";
       }
@@ -126,6 +126,14 @@ const real = (path: string): string => {
     return parent === path ? path : join(real(parent), relative(parent, path));
   }
 };
+/**
+ * The home a config file belongs to: the directory of the file the OS actually opens (links and `..` resolved
+ * physically), so a `link/../config.json` that opens `far/config.json` has `far` as its home. A config file that does
+ * not exist yet falls back to its resolved directory. `realpathSync.native` (the OS's realpath): the JS one collapses `..`
+ * on paper first and so misses the link.
+ */
+const homeOf = (configFile: string): string =>
+  existsSync(configFile) ? dirname(realpathSync.native(configFile)) : real(resolve(dirname(configFile)));
 /** Whether an already-resolved path is inside an already-resolved directory. */
 const inside = (dir: string, path: string): boolean => {
   const rel = relative(dir, path);
@@ -140,9 +148,10 @@ const inside = (dir: string, path: string): boolean => {
 export const homeTokenFile = (env: Env, configFile: string): string | undefined => {
   const named = env["DORI_SLACK_TOKEN_FILE"];
   if (!named) return undefined;
-  const home = real(resolve(dirname(configFile)));
+  const home = homeOf(configFile);
   // Resolved once: the string checked is the string the lane gets, so a link swapped later is never followed.
-  const file = real(resolve(named));
+  // Never resolve() first: it collapses `..` on paper, and the OS may open the file through a link instead.
+  const file = real(isAbsolute(named) ? named : `${process.cwd()}${sep}${named}`);
   // A missing file is passed only at the home's own slack-token, which the owner sets up; any other name that does not
   // exist yet is refused, since a link later put at that name is what the lane would follow.
   if (!existsSync(file) && file !== join(home, TOKEN_FILE_NAME))
@@ -169,13 +178,13 @@ export const laneTokenEnv = (env: Env, configFile: string): Record<string, strin
   const pass = (file: string): Record<string, string> => ({
     DORI_SLACK_TOKEN_FILE: file,
     [RESOLVED_MARK]: file,
-    [RESOLVED_HOME]: real(resolve(dirname(configFile))),
+    [RESOLVED_HOME]: homeOf(configFile),
     DORI_SLACK_TOKEN: "",
     [OUTSIDE_HOME_FLAG]: "",
   });
   const file = homeTokenFile(env, configFile);
   if (file) return pass(file);
-  const home = real(resolve(dirname(configFile)));
+  const home = homeOf(configFile);
   const own = join(home, TOKEN_FILE_NAME);
   if (existsSync(own)) {
     // The home's own file gets the same check as a named one, on the one resolved string the lane also gets.
@@ -203,5 +212,6 @@ export const laneLaunchEnv = (env: Env, rawConfig: string): Record<string, strin
   // which collapses `..` on paper): the OS then resolves it (links, `..`) exactly as the launcher's own config load did. An absolute one reaches the lane unchanged.
   const raw = env["DORI_CONFIG"];
   const relativeConfig = raw !== undefined && !isAbsolute(raw);
-  return { ...laneTokenEnv(env, config), ...(relativeConfig ? { DORI_CONFIG: `${process.cwd()}${sep}${raw}` } : {}) };
+  const osPath = relativeConfig ? `${process.cwd()}${sep}${raw}` : (raw ?? config);
+  return { ...laneTokenEnv(env, osPath), ...(relativeConfig ? { DORI_CONFIG: osPath } : {}) };
 };
