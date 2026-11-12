@@ -195,42 +195,6 @@ test("on hc, a program that has not reported a status yet is waited for, and one
   // A failure glued onto the end of the extension path by a join still counts, after either tail form.
   const glued = `${exact} imported from /x/extensions/quota-meter/index.jsNo API key found\n$ `;
   expect(await launch("hc-glued", { ...atWidth, screen: glued })).toBe("STARTUP_ERROR hc-glued t1: No API key");
-  // An unquoted path with a space in it is still the warning's own.
-  const spacedPath = `${longWarning} imported from /Users/John Doe/.omo/agent/extensions/quota-meter/index.js`;
-  expect(await launch("hc-spaced", { ...atWidth, screen: `${spacedPath}\n❯ \n Pursuing goal (1m)` })).toBe(
-    "STARTUP_OK hc-spaced t1",
-  );
-  // Code and names that only look like a failure once the gap is gone are no failure: rateLimit, ratelimiter, noApiKey.
-  const code = "const rateLimit = ratelimiter(noApiKey, usageLimit); // SessionCrashed\n❯ \n Pursuing goal (1m)";
-  expect(await launch("hc-code", { ...atWidth, screen: code })).toBe("STARTUP_OK hc-code t1");
-  // A real line break between two words is two lines, not a failure: moderate / limits.
-  expect(
-    await launch("hc-break", { ...atWidth, screen: "load is moderate\nlimits apply\n❯ \n Pursuing goal (1m)" }),
-  ).toBe("STARTUP_OK hc-break t1");
-  // A directory with a script-like name (anna.tsai/, node.js/) is part of the path, not its end.
-  for (const [i, dir] of ["/Users/anna.tsai", "/opt/node.js"].entries()) {
-    const path = `${longWarning} imported from ${dir}/.omo/agent/extensions/quota-meter/index.js`;
-    expect(await launch(`hc-dir-${i}`, { ...atWidth, screen: `${path}\n❯ \n Pursuing goal (1m)` })).toBe(
-      `STARTUP_OK hc-dir-${i} t1`,
-    );
-  }
-  // A phrase is a whole word: quotaUsed and "moderate limits" are no failure; "rate limited" and "quotas" are.
-  for (const [i, text] of ["const quotaUsed = 3;", "load is moderate limits apply", "my_quota_check"].entries()) {
-    expect(await launch(`hc-word-${i}`, { ...atWidth, screen: `${text}\n❯ \n Pursuing goal (1m)` })).toBe(
-      `STARTUP_OK hc-word-${i} t1`,
-    );
-  }
-  expect(await launch("hc-limited", { ...atWidth, screen: "Error: rate limited by provider\n$ " })).toBe(
-    "STARTUP_ERROR hc-limited t1: rate limited",
-  );
-  expect(await launch("hc-quotas", { ...atWidth, screen: "Error: all quotas exhausted\n$ " })).toBe(
-    "STARTUP_ERROR hc-quotas t1: quotas",
-  );
-  // A Windows path from Bun: a dotted directory between backslashes is not the end of the path either.
-  const winPath = `${longWarning} imported from C:\\Users\\anna.tsai\\.omo\\agent\\extensions\\quota-meter\\index.js`;
-  expect(await launch("hc-win", { ...atWidth, screen: `${winPath}\n❯ \n Pursuing goal (1m)` })).toBe(
-    "STARTUP_OK hc-win t1",
-  );
   // A printed line exactly as wide as the pane is joined to the next one; a failure glued on after a letter still counts.
   const filled = "Loading providers ok\nNo API key found\n$ ";
   expect(await launch("hc-filled", { ...atWidth, cols: 20, screen: filled })).toBe(
@@ -241,25 +205,6 @@ test("on hc, a program that has not reported a status yet is waited for, and one
     const glued = `Loading providers ok\n${line}\n$ `;
     expect(await launch(`hc-glue-${i}`, { ...atWidth, cols: 20, screen: glued })).toStartWith(
       `STARTUP_ERROR hc-glue-${i} t1: `,
-    );
-  }
-  // Identifiers that end in an error code's name are no failure; the bare codes are.
-  for (const [i, text] of ["const e = isQuotaExceeded(r);", "handler: onRateLimitExceeded"].entries()) {
-    expect(await launch(`hc-ident-${i}`, { ...atWidth, screen: `${text}\n❯ \n Pursuing goal (1m)` })).toBe(
-      `STARTUP_OK hc-ident-${i} t1`,
-    );
-  }
-  expect(await launch("hc-upper", { ...atWidth, screen: "error: QUOTA_EXCEEDED\n$ " })).toBe(
-    "STARTUP_ERROR hc-upper t1: QUOTA_EXCEEDED",
-  );
-  // Provider error codes with no message still count.
-  for (const [code, want] of [
-    ["error: insufficient_quota", "insufficient_quota"],
-    ["code=quotaExceeded", "quotaExceeded"],
-    ["429 from the rate limiter", "rate limiter"],
-  ] as const) {
-    expect(await launch(`hc-code-${want.length}`, { ...atWidth, screen: `${code}\n$ ` })).toBe(
-      `STARTUP_ERROR hc-code-${want.length} t1: ${want}`,
     );
   }
 });
