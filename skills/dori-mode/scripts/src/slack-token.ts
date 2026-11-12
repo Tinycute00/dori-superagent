@@ -2,56 +2,105 @@
  * The Slack token without putting it on a command line (#200). hc passes a session's env as argv (`env K=V ...`), which
  * `ps`, `hc get` and logs show, so a lane gets the path of an owner-only token file instead of the token itself.
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /** The token file a launcher finds next to its config when DORI_SLACK_TOKEN_FILE is not set. */
 export const TOKEN_FILE_NAME = "slack-token";
+/** Set to 1 to let a launcher hand its lanes a DORI_SLACK_TOKEN_FILE outside its own home (its config's directory). */
+export const OUTSIDE_HOME_FLAG = "DORI_SLACK_TOKEN_FILE_OUTSIDE_HOME";
+/** What boot prints next to a token file it read on Windows, where the file's NTFS ACL is not checked. */
+export const WIN32_ACL_NOTICE = "the token file's NTFS ACL is not checked on Windows; keep it readable by you only";
 
 export class TokenFileError extends Error {}
 
 type Env = Readonly<Record<string, string | undefined>>;
+/** The reading process's uid; undefined where there is none (Windows). Injectable for tests. */
+type Uid = number | undefined;
 
 /**
- * DORI_SLACK_TOKEN when set and not empty, else the trimmed contents of the file DORI_SLACK_TOKEN_FILE names, else
- * undefined. The file must be owner-only (no group or other bits). That is checked on POSIX only: on Windows the mode
- * bits do not reflect the NTFS ACL (stat reports 0666 or 0444 for every file), so there the ACL is the owner's job.
+ * Reads the token file through ONE open file: the mode, the owner and the type are checked on that descriptor and the
+ * token is read from it, so a file swapped in between a check and the read is never used. It must be a regular file
+ * (a FIFO would block the read forever; it is opened non-blocking so the check is reached), owned by the reading user,
+ * and owner-only (no group or other bits). The mode and owner are POSIX checks: on Windows stat reports 0666 or 0444 and
+ * no uid, so there the NTFS ACL is the owner's job and boot says so (WIN32_ACL_NOTICE).
  */
-export const slackToken = (env: Env = process.env, platform: string = process.platform): string | undefined => {
-  const token = env["DORI_SLACK_TOKEN"];
-  if (token) return token;
-  const path = env["DORI_SLACK_TOKEN_FILE"];
-  if (!path) return undefined;
-  let mode: number;
+const readTokenFile = (path: string, platform: string, uid: Uid): string => {
+  const flags = constants.O_RDONLY | (platform === "win32" ? 0 : constants.O_NONBLOCK);
+  let fd: number;
   try {
-    mode = statSync(path).mode;
+    fd = openSync(path, flags);
   } catch {
     throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} cannot be read`);
   }
-  if (platform !== "win32" && (mode & 0o077) !== 0)
-    throw new TokenFileError(
-      `DORI_SLACK_TOKEN_FILE ${path} is open to group or others (mode ${(mode & 0o777).toString(8)}); chmod 600 it`,
-    );
-  let value: string;
   try {
-    value = readFileSync(path, "utf8").trim();
-  } catch {
-    throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} cannot be read`);
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is not a regular file`);
+    if (platform !== "win32") {
+      if (uid !== undefined && st.uid !== uid)
+        throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is owned by uid ${st.uid}, not by this user (${uid})`);
+      if ((st.mode & 0o077) !== 0)
+        throw new TokenFileError(
+          `DORI_SLACK_TOKEN_FILE ${path} is open to group or others (mode ${(st.mode & 0o777).toString(8)}); chmod 600 it`,
+        );
+    }
+    let value: string;
+    try {
+      value = readFileSync(fd, "utf8").trim();
+    } catch {
+      throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} cannot be read`);
+    }
+    if (!value) throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is empty`);
+    return value;
+  } finally {
+    closeSync(fd);
   }
-  if (!value) throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} is empty`);
-  return value;
 };
 
 /**
- * The env a lane needs to find this home's token: the token file's path, never the token. The file is the launcher's
- * DORI_SLACK_TOKEN_FILE, else `slack-token` next to its config, made absolute because the lane runs in another directory.
- * A file the launcher names is passed even when it is missing, so the lane refuses with the path-only error instead of
- * using whatever token the core's env holds; a missing file next to the config adds nothing, as before.
- * DORI_SLACK_TOKEN is passed empty: an hc lane inherits the core's env, which may hold another home's token, and a set
- * DORI_SLACK_TOKEN is read before the file.
+ * DORI_SLACK_TOKEN when set and not empty, else the trimmed contents of the file DORI_SLACK_TOKEN_FILE names (checked as
+ * readTokenFile says), else undefined. A bad file is a TokenFileError naming the path, never read as no token.
+ */
+export const slackToken = (
+  env: Env = process.env,
+  platform: string = process.platform,
+  uid: Uid = process.getuid?.(),
+): string | undefined => {
+  const token = env["DORI_SLACK_TOKEN"];
+  if (token) return token;
+  const path = env["DORI_SLACK_TOKEN_FILE"];
+  return path ? readTokenFile(path, platform, uid) : undefined;
+};
+
+/** Boot's note about a token taken from a file on Windows, whose ACL nothing checks; undefined everywhere else. */
+export const tokenFileNotice = (env: Env = process.env, platform: string = process.platform): string | undefined =>
+  platform === "win32" && !env["DORI_SLACK_TOKEN"] && env["DORI_SLACK_TOKEN_FILE"] ? WIN32_ACL_NOTICE : undefined;
+
+const inside = (dir: string, path: string): boolean => {
+  const rel = relative(dir, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+};
+
+/**
+ * The env a lane needs to find this home's token: the token file's path, never the token, made absolute because the
+ * lane runs in another directory. The home is the launcher's config directory. Its own `slack-token` there is used
+ * when DORI_SLACK_TOKEN_FILE is unset. A DORI_SLACK_TOKEN_FILE inside the home is passed even when missing, so the lane
+ * refuses with the path-only error. One outside the home is most likely inherited from another home's core (#200, one
+ * variable over), so it is refused unless DORI_SLACK_TOKEN_FILE_OUTSIDE_HOME=1 says it was meant. With no token file at
+ * all nothing is added, as before. DORI_SLACK_TOKEN is passed empty: an hc lane inherits the core's env, which may hold
+ * another home's token, and a set DORI_SLACK_TOKEN is read before the file.
  */
 export const laneTokenEnv = (env: Env, configFile: string): Record<string, string> => {
+  const home = resolve(dirname(configFile));
   const named = env["DORI_SLACK_TOKEN_FILE"];
-  const file = resolve(named || join(dirname(configFile), TOKEN_FILE_NAME));
-  return named || existsSync(file) ? { DORI_SLACK_TOKEN_FILE: file, DORI_SLACK_TOKEN: "" } : {};
+  const pass = (file: string): Record<string, string> => ({ DORI_SLACK_TOKEN_FILE: file, DORI_SLACK_TOKEN: "" });
+  if (!named) {
+    const own = join(home, TOKEN_FILE_NAME);
+    return existsSync(own) ? pass(own) : {};
+  }
+  const file = resolve(named);
+  if (inside(home, file) || env[OUTSIDE_HOME_FLAG] === "1") return pass(file);
+  throw new TokenFileError(
+    `DORI_SLACK_TOKEN_FILE ${file} is outside this home (${home}), so it may be another home's; set ${OUTSIDE_HOME_FLAG}=1 if it is meant`,
+  );
 };

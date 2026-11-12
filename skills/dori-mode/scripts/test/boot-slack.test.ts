@@ -3,6 +3,7 @@ import { chmodSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bootCheck, envSlackCheck, slackAuthCheck } from "../src/boot.ts";
 import { Slack } from "../src/messenger/slack.ts";
+import { WIN32_ACL_NOTICE } from "../src/slack-token.ts";
 import { Reports } from "../src/reports.ts";
 import { Worklog } from "../src/worklog.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
@@ -97,6 +98,19 @@ test("a bad token file is a failed SLACK token-file line and boot still runs its
     expect(r.exitCode).toBe(1);
     expect(r.lines.join("\n")).not.toContain("FIXTURE_SECRET");
   }
+});
+
+test("on Windows boot reads the token file and says its ACL is not checked", async () => {
+  const file = join(state.dir, "win-token");
+  writeFileSync(file, "xoxb-FIXTURE_SECRET\n");
+  const client = () => ({ call: async () => ({ ok: true, user_id: "U1", team_id: "T1" }) });
+  const r = await bootCheck({
+    ...bootDeps(newWorld()),
+    slack: envSlackCheck(client, { DORI_SLACK_TOKEN_FILE: file }, "win32"),
+  });
+  expect(r.lines.some((l) => l.startsWith("SLACK authenticated user=U1 team=T1"))).toBe(true);
+  expect(r.lines).toContain(`SLACK token-file: ${WIN32_ACL_NOTICE}`);
+  expect(r.lines.join("\n")).not.toContain("FIXTURE_SECRET");
 });
 
 test("Slack runs after the local checks and a stalled auth.test ends at the deadline", async () => {

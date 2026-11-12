@@ -9,11 +9,15 @@ import { reconcilePanes } from "./reconcile.ts";
 import { runtimesOf } from "./run.ts";
 import { listSessions } from "./sessions.ts";
 import { ReportError, type Reports } from "./reports.ts";
-import { slackToken, TokenFileError } from "./slack-token.ts";
+import { slackToken, TokenFileError, tokenFileNotice } from "./slack-token.ts";
 import type { Worklog } from "./worklog.ts";
 import { worklogLines } from "./worklog-render.ts";
 
-export type SlackCheck = () => Promise<{ readonly userId: string; readonly teamId: string } | null>;
+export type SlackCheck = () => Promise<{
+  readonly userId: string;
+  readonly teamId: string;
+  readonly notice?: string;
+} | null>;
 export type BootDeps = Pick<FlowDeps, "run" | "registry" | "config" | "clock" | "rts" | "env"> & {
   readonly reports: Reports;
   readonly worklog: Worklog;
@@ -53,7 +57,9 @@ export const envSlackCheck =
   ): SlackCheck =>
   async () => {
     const token = slackToken(env, platform);
-    return await slackAuthCheck(token ? client(token) : null)();
+    const auth = await slackAuthCheck(token ? client(token) : null)();
+    const notice = tokenFileNotice(env, platform);
+    return auth && notice ? { ...auth, notice } : auth;
   };
 
 /**
@@ -209,6 +215,7 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
           ? `SLACK authenticated user=${auth.userId} team=${auth.teamId} (auth.test only; inbox delivery unverified)`
           : "SLACK skipped (DORI_SLACK_TOKEN not set)",
       );
+    if (auth && auth !== "timeout" && auth.notice) lines.push(`SLACK token-file: ${auth.notice}`);
   } catch (e) {
     failed = true;
     // A token file error names the path, never the value; any other error may carry provider text, so it is not shown.
