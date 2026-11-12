@@ -197,7 +197,9 @@ export const laneTokenEnv = (env: Env, configFile: string): Record<string, strin
 export const laneLaunchEnv = (env: Env, rawConfig: string): Record<string, string> => {
   const config = resolve(rawConfig);
   if (dirname(config) !== resolve(dirname(rawConfig)))
-    throw new TokenFileError(`DORI_CONFIG "${rawConfig}" does not name a config file; set it to the config file's path`);
+    throw new TokenFileError(
+      `DORI_CONFIG "${rawConfig}" does not name a config file; set it to the config file's path`,
+    );
   const changed = env["DORI_CONFIG"] !== undefined && env["DORI_CONFIG"] !== config;
   return { ...laneTokenEnv(env, config), ...(changed ? { DORI_CONFIG: config } : {}) };
 };
