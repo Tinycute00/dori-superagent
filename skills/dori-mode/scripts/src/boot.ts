@@ -59,7 +59,7 @@ export const envSlackCheck =
 /**
  * Read-only recovery check after a restart or compaction: messenger auth, lanes whose pane vanished, panes no lane
  * owns, each lane's journal state, and persistent watches left on finished lanes. It changes nothing: no registry
- * write, no relaunch, no stopped watch. Exit 1 when any input could not be read.
+ * write, no relaunch, no stopped watch. Exit 1 when any input could not be read, on drift, or on a config warning.
  */
 export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lines: string[] }> => {
   const lines: string[] = [];
@@ -142,7 +142,7 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
         `VANISHED ${lane.key} pane=${lane.pane} status=${lane.status}; registry and worktrees preserved; no relaunch`,
       );
     if (result.unregistered.length) lines.push(`UNREGISTERED ${result.unregistered.join(" ")}`);
-    const drift = await driftCheck(rts, registered, panes);
+    const drift = await driftCheck(rts, lanes, panes);
     lines.push(...drift.lines);
     if (drift.failed) failed = true;
   }

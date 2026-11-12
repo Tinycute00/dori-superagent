@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import { launchLane } from "../src/launch.ts";
 import { slackToken, TokenFileError } from "../src/slack-token.ts";
@@ -86,4 +86,32 @@ test("a missing or empty token file is refused, never read as no token", () => {
   expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: join(state.dir, "absent") })).toThrow(TokenFileError);
   const empty = tokenFile(join(state.dir, "empty"), "\n", 0o600);
   expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: empty })).toThrow(/is empty/);
+});
+
+test("a relative token-file path is passed absolute, since the lane runs in another directory", async () => {
+  const home = join(state.dir, "rel-home");
+  const file = tokenFile(home, "xoxb-rel\n", 0o600);
+  process.env["DORI_SLACK_TOKEN_FILE"] = relative(process.cwd(), file);
+  const create = (await launchArgv(home, "rel-lane")).find((c) => c[0] === "hc" && c.includes("--bg")) ?? [];
+  expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${file}`);
+});
+
+test("a token file the launcher names is passed even when missing, so the lane never falls back to the core's token", async () => {
+  const absent = join(state.dir, "named", "slack-token");
+  process.env["DORI_SLACK_TOKEN_FILE"] = absent;
+  const create =
+    (await launchArgv(join(state.dir, "named-home"), "named-lane")).find((c) => c[0] === "hc" && c.includes("--bg")) ??
+    [];
+  expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${absent}`);
+  expect(create).toContain("DORI_SLACK_TOKEN=");
+});
+
+test("a token file that stats but cannot be read is a TokenFileError naming only the path", () => {
+  const dir = join(state.dir, "a-dir");
+  mkdirSync(dir, { recursive: true });
+  chmodSync(dir, 0o700);
+  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: dir }, "linux")).toThrow(TokenFileError);
+  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: dir }, "linux")).toThrow(
+    `DORI_SLACK_TOKEN_FILE ${dir} cannot be read`,
+  );
 });
