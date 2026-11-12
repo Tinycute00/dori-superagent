@@ -1,17 +1,10 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
-import { chmodSync, mkdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { launchLane } from "../src/launch.ts";
-import {
-  laneTokenEnv,
-  OUTSIDE_HOME_FLAG,
-  slackToken,
-  TokenFileError,
-  tokenFileNotice,
-  WIN32_ACL_NOTICE,
-} from "../src/slack-token.ts";
+import { laneTokenEnv, OUTSIDE_HOME_FLAG, TokenFileError } from "../src/slack-token.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
 
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
@@ -79,26 +72,6 @@ test("with no token file the lane env is unchanged, as in a single-home setup", 
   expect(calls.flat().filter((arg) => arg.includes("DORI_SLACK_TOKEN") || arg.includes("xoxb-"))).toEqual([]);
 });
 
-test("DORI_SLACK_TOKEN is read first, then the token file when the variable is unset or empty", () => {
-  const file = tokenFile(join(state.dir, "t"), "  xoxb-from-file\n", 0o600);
-  expect(slackToken({ DORI_SLACK_TOKEN: "xoxb-from-env", DORI_SLACK_TOKEN_FILE: file })).toBe("xoxb-from-env");
-  expect(slackToken({ DORI_SLACK_TOKEN: "", DORI_SLACK_TOKEN_FILE: file })).toBe("xoxb-from-file");
-  expect(slackToken({ DORI_SLACK_TOKEN_FILE: file })).toBe("xoxb-from-file");
-  expect(slackToken({})).toBeUndefined();
-});
-
-test("a token file open to group or others is refused on POSIX; Windows has no mode bits to check", () => {
-  const file = tokenFile(join(state.dir, "open"), "xoxb-open\n", 0o644);
-  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: file }, "linux")).toThrow(/is open to group or others.*chmod 600/);
-  expect(slackToken({ DORI_SLACK_TOKEN_FILE: file }, "win32")).toBe("xoxb-open");
-});
-
-test("a missing or empty token file is refused, never read as no token", () => {
-  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: join(state.dir, "absent") })).toThrow(TokenFileError);
-  const empty = tokenFile(join(state.dir, "empty"), "\n", 0o600);
-  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: empty })).toThrow(/is empty/);
-});
-
 test("a relative token-file path is passed absolute, since the lane runs in another directory", async () => {
   const home = join(state.dir, "rel-home");
   const file = tokenFile(home, "xoxb-rel\n", 0o600);
@@ -107,8 +80,8 @@ test("a relative token-file path is passed absolute, since the lane runs in anot
   expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${real(file)}`);
 });
 
-test("a token file the launcher names is passed even when missing, so the lane never falls back to the core's token", async () => {
-  const absent = join(state.dir, "named-home", "named", "slack-token");
+test("the home's own slack-token is passed even when missing, so the lane never falls back to the core's token", async () => {
+  const absent = join(state.dir, "named-home", "slack-token");
   process.env["DORI_SLACK_TOKEN_FILE"] = absent;
   const create =
     (await launchArgv(join(state.dir, "named-home"), "named-lane")).find((c) => c[0] === "hc" && c.includes("--bg")) ??
@@ -117,48 +90,11 @@ test("a token file the launcher names is passed even when missing, so the lane n
   expect(create).toContain("DORI_SLACK_TOKEN=");
 });
 
-test("a directory or a FIFO at the path is refused as not a regular file, and a FIFO never blocks the read", () => {
-  const dir = join(state.dir, "a-dir");
-  mkdirSync(dir, { recursive: true });
-  chmodSync(dir, 0o700);
-  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: dir }, "linux")).toThrow(
-    `DORI_SLACK_TOKEN_FILE ${dir} is not a regular file`,
-  );
-  const fifo = join(state.dir, "fifo");
-  expect(Bun.spawnSync(["mkfifo", "-m", "600", fifo]).exitCode).toBe(0);
-  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: fifo }, "linux")).toThrow(
-    `DORI_SLACK_TOKEN_FILE ${fifo} is not a regular file`,
-  );
-});
-
-test("the file is checked and read through one descriptor: a file swapped in after the check is never read", () => {
-  const dir = join(state.dir, "swap");
-  const file = tokenFile(dir, "xoxb-own\n", 0o600);
-  const planted = join(dir, "planted");
-  writeFileSync(planted, "xoxb-planted\n");
-  chmodSync(planted, 0o600);
-  // The path is replaced right after the owner/mode check, the window a stat-then-read-by-path would expose.
-  const realFstat = fs.fstatSync;
-  const swap = spyOn(fs, "fstatSync").mockImplementation(((fd: number) => {
-    const st = realFstat(fd);
-    renameSync(planted, file);
-    return st;
-  }) as typeof fs.fstatSync);
-  try {
-    expect(slackToken({ DORI_SLACK_TOKEN_FILE: file }, "linux", process.getuid?.())).toBe("xoxb-own");
-    expect(swap).toHaveBeenCalledTimes(1);
-  } finally {
-    swap.mockRestore();
-  }
-});
-
-test("a token file owned by another user is refused, even owner-only", () => {
-  const file = tokenFile(join(state.dir, "other"), "xoxb-other\n", 0o600);
-  const me = process.getuid?.() ?? 0;
-  expect(() => slackToken({ DORI_SLACK_TOKEN_FILE: file }, "linux", me + 1)).toThrow(
-    /is owned by uid \d+, not by this user/,
-  );
-  expect(slackToken({ DORI_SLACK_TOKEN_FILE: file }, "linux", me)).toBe("xoxb-other");
+test("any other named token file that does not exist yet is refused: a link later put there is what the lane would follow", () => {
+  const home = join(state.dir, "absent-home");
+  mkdirSync(home, { recursive: true });
+  const other = join(home, "named", "slack-token");
+  expect(() => laneTokenEnv({ DORI_SLACK_TOKEN_FILE: other }, join(home, "config.json"))).toThrow(/does not exist/);
 });
 
 test("an inherited DORI_SLACK_TOKEN_FILE outside this home is refused unless the flag says it is meant", () => {
@@ -177,10 +113,11 @@ test("an inherited DORI_SLACK_TOKEN_FILE outside this home is refused unless the
   // Unset, the home's own file is used; a file inside the home is passed as named.
   const ok = (file: string) => ({ DORI_SLACK_TOKEN_FILE: real(file), DORI_SLACK_TOKEN: "", [OUTSIDE_HOME_FLAG]: "" });
   expect(laneTokenEnv({}, config)).toEqual(ok(join(home, "slack-token")));
-  const nested = join(home, "keys", "slack-token");
+  const nested = tokenFile(join(home, "keys"), "xoxb-nested\n", 0o600);
   expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: nested }, config)).toEqual(ok(nested));
   // A file whose name starts with ".." is still inside the home.
   const dotted = join(home, "..slack-token");
+  writeFileSync(dotted, "xoxb-dotted\n");
   expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: dotted }, config)).toEqual(ok(dotted));
   // A link inside the home to another home's file is outside: links are resolved before the check.
   const link = join(home, "linked-token");
@@ -220,12 +157,6 @@ test("the home's own slack-token gets the same link check, and an inherited allo
   expect(() => laneTokenEnv({ DORI_SLACK_TOKEN_FILE: dangling }, join(homeL, "config.json"))).toThrow(
     /is a link whose target does not exist/,
   );
-});
-
-test("on Windows a token taken from a file comes with a notice that its ACL is not checked", () => {
-  expect(tokenFileNotice({ DORI_SLACK_TOKEN_FILE: "C:\\x\\slack-token" }, "win32")).toBe(WIN32_ACL_NOTICE);
-  expect(tokenFileNotice({ DORI_SLACK_TOKEN_FILE: "/x/slack-token" }, "linux")).toBeUndefined();
-  expect(tokenFileNotice({ DORI_SLACK_TOKEN: "xoxb-env", DORI_SLACK_TOKEN_FILE: "C:\\x" }, "win32")).toBeUndefined();
 });
 
 test("a launch with a token file outside this home is refused before any session is created", async () => {

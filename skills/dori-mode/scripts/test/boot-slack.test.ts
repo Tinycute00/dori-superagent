@@ -91,7 +91,11 @@ test("a bad token file is a failed SLACK token-file line and boot still runs its
   expect(wide.lines).toContain(
     `SLACK token-file: DORI_SLACK_TOKEN_FILE ${open} is open to group or others (mode ${mode}); chmod 600 it`,
   );
-  expect(missing.lines).toContain(`SLACK token-file: DORI_SLACK_TOKEN_FILE ${absent} cannot be read`);
+  expect(
+    missing.lines.some((l) =>
+      l.startsWith(`SLACK token-file: DORI_SLACK_TOKEN_FILE ${realpathSync(state.dir)}/absent does not exist`),
+    ),
+  ).toBe(true);
   for (const r of [wide, missing]) {
     expect(r.lines.some((l) => l.startsWith("RUNTIME "))).toBe(true);
     expect(r.lines.at(-1)).toBe("BOOT incomplete read-only; nothing restarted, written or stopped");

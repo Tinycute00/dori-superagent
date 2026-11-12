@@ -26,10 +26,13 @@ type Uid = number | undefined;
  * no uid, so there the NTFS ACL is the owner's job and boot says so (WIN32_ACL_NOTICE).
  */
 const readTokenFile = (path: string, platform: string, uid: Uid): string => {
-  const flags = constants.O_RDONLY | (platform === "win32" ? 0 : constants.O_NONBLOCK);
+  // POSIX: the path is resolved once here and opened with O_NOFOLLOW, so a link put at that name afterwards is refused
+  // instead of followed. A link the user set up on purpose still works: it is resolved before the open.
+  const posix = platform !== "win32";
   let fd: number;
   try {
-    fd = openSync(path, flags);
+    const target = posix ? realpathSync(path) : path;
+    fd = openSync(target, constants.O_RDONLY | (posix ? constants.O_NONBLOCK | constants.O_NOFOLLOW : 0));
   } catch {
     throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} cannot be read`);
   }
@@ -89,7 +92,15 @@ const real = (path: string): string => {
     try {
       link = lstatSync(path).isSymbolicLink();
     } catch {}
-    if (link) throw new TokenFileError(`${path} is a link whose target does not exist`);
+    if (link) {
+      let loop = false;
+      try {
+        realpathSync(path);
+      } catch (e) {
+        loop = (e as NodeJS.ErrnoException).code === "ELOOP";
+      }
+      throw new TokenFileError(loop ? `${path} is a link loop` : `${path} is a link whose target does not exist`);
+    }
     const parent = dirname(path);
     return parent === path ? path : join(real(parent), relative(parent, path));
   }
@@ -111,6 +122,12 @@ export const homeTokenFile = (env: Env, configFile: string): string | undefined 
   const home = real(resolve(dirname(configFile)));
   // Resolved once: the string checked is the string the lane gets, so a link swapped later is never followed.
   const file = real(resolve(named));
+  // A missing file is passed only at the home's own slack-token, which the owner sets up; any other name that does not
+  // exist yet is refused, since a link later put at that name is what the lane would follow.
+  if (!existsSync(file) && file !== join(home, TOKEN_FILE_NAME))
+    throw new TokenFileError(
+      `DORI_SLACK_TOKEN_FILE ${file} does not exist; only this home's own ${TOKEN_FILE_NAME} may be named before it exists`,
+    );
   if (inside(home, file) || env[OUTSIDE_HOME_FLAG] === "1") return file;
   throw new TokenFileError(
     `DORI_SLACK_TOKEN_FILE ${file} is outside this home (${home}), so it may be another home's; set ${OUTSIDE_HOME_FLAG}=1 if it is meant`,
