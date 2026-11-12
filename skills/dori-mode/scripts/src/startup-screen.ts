@@ -2,20 +2,55 @@
 import type { Runtimes } from "../../../../src/runtime/registry.ts";
 import type { SessionRef } from "../../../../src/runtime/types.ts";
 
-// One space between words, as the agent prints them: the unwrapped read puts back a space hc cut at a wrap, and a looser
-// gap would match code such as `rateLimit` or a key such as `ratelimiter`. Three kinds of phrase:
-// - ANYWHERE: phrases no healthy screen prints. They match even right after a letter, since a join can glue one onto a
-//   printed line that filled the pane (`...okNo API key`).
-// - WORD: phrases that are also everyday words or identifiers (`rate limit`, `usage limit`, `quota`, the error codes).
-//   No letter, digit or `_` right before (`moderate limits`, `isQuotaExceeded`) or right after beyond a plain ending
-//   (`quotaUsed`; `rate limited`, `rate limiter`, `quotas` still count).
-// - GLUED: the same words glued onto a pane-wide line, which the WORD rule cannot see. Only as a provider prints them: a
-//   capital, then a second word (`...okRate limit exceeded`, `...okQuota exceeded`), which code (`onRateLimit`) is not.
-const ANYWHERE =
-  /Cannot find module|All fallback models failed|No API key|model_not_available|Session crashed|unknown provider|insufficient_quota/i;
-const WORD =
-  /(?<![a-z0-9_])(?:quota_?exceeded|rate_?limit_?exceeded|usage limit|rate limit|quota)(?:s|es|ed|er|ing)?(?![a-z0-9_])/i;
-const GLUED = /(?<=[a-z0-9])(?:Rate limit|Usage limit|Quota [a-z]+)/;
+/**
+ * Every phrase that means a lane failed to start, one row each (#202). `anywhere` rows are text no healthy screen prints,
+ * so they match even glued onto the end of a pane-wide line by the unwrapped read (`...okNo API key`). `word` rows are
+ * also ordinary words or code, so each must stand alone (see `standsAlone`) and names a failure, not a topic: bare
+ * `quota` or `rate limit` is no row, `quota exceeded` and `rate limit reached` are. A gap is one space as printed (the
+ * unwrapped read puts back a space hc cut at a wrap), or `_`/`-` in a code, or nothing in a camelCase code.
+ * The fixture corpus in test/startup-screen.test.ts holds real error lines and the code and prose each row must not match.
+ */
+type Boundary = "anywhere" | "word";
+const PHRASES: readonly (readonly [Boundary, string])[] = [
+  ["anywhere", "Cannot find module"],
+  ["anywhere", "All fallback models failed"],
+  ["anywhere", "No API key"],
+  ["anywhere", "model_not_available"],
+  ["anywhere", "Session crashed"],
+  ["anywhere", "unknown provider"],
+  ["anywhere", "insufficient_quota"],
+  ["anywhere", "RESOURCE_EXHAUSTED"],
+  ["anywhere", "Too Many Requests"],
+  ["anywhere", "rate_limit_error"],
+  ["word", "rate[ _-]?limit(?:s)?[ _-]?(?:exceeded|reached|hit|error)"],
+  ["word", "rate[ -]limit(?:ed|er)"],
+  ["word", "usage[ _-]?limit(?:s)?[ _-]?(?:exceeded|reached|hit)"],
+  ["word", "quota(?:s)?[ _-]?(?:exceeded|exhausted|reached|hit)"],
+  ["word", "exceeded your (?:current )?quota"],
+];
+const PATTERNS = PHRASES.map(([boundary, source]) => ({ boundary, re: new RegExp(source, "gi") }));
+/**
+ * A `word` match stands alone when no letter, digit or `_` touches its end, and none its start, except when a join glued
+ * it onto a pane-wide line: then it must read as printed text, not an identifier. That is a phrase with a gap
+ * (`Rate limit exceeded`, `QUOTA_EXCEEDED`) that starts with a capital or has a `_`, which camelCase (`isQuotaExceeded`,
+ * `onRateLimitExceeded`) never is.
+ */
+const standsAlone = (text: string, at: number, found: string): boolean => {
+  if (/[a-z0-9_]/i.test(text[at + found.length] ?? "")) return false;
+  if (!/[a-z0-9_]/i.test(text[at - 1] ?? "")) return true;
+  return /[ _-]/.test(found) && (/^[A-Z]/.test(found) || found.includes("_"));
+};
+const firstFailure = (text: string): string | null => {
+  let first: { at: number; found: string } | undefined;
+  for (const { boundary, re } of PATTERNS) {
+    for (const m of text.matchAll(re)) {
+      if (boundary === "word" && !standsAlone(text, m.index, m[0])) continue;
+      if (!first || m.index < first.at) first = { at: m.index, found: m[0] };
+      break;
+    }
+  }
+  return first?.found ?? null;
+};
 // omo warns about a user extension it cannot load (`Warning: Failed to load extension "...": ... Cannot find module ...`)
 // and starts anyway (#202). Only the warning's own text is removed, never the rest of its line: a row-wrap join can put a
 // real failure on the same line. The path may hold the newline of a row the join missed, and a space cut at a wrap may
@@ -31,6 +66,5 @@ const EXTENSION_WARNING =
 export const startupScreen = (rts: Runtimes, ref: SessionRef): Promise<string> =>
   rts.for(ref).read(ref, 40, { unwrapped: true });
 export const startupFailure = (screen: string): string | null => {
-  const text = screen.replace(EXTENSION_WARNING, "");
-  return (ANYWHERE.exec(text) ?? WORD.exec(text) ?? GLUED.exec(text))?.[0] ?? null;
+  return firstFailure(screen.replace(EXTENSION_WARNING, ""));
 };
