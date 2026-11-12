@@ -4,6 +4,7 @@
  */
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { configPath } from "./config.ts";
 
 /** The token file a launcher finds next to its config when DORI_SLACK_TOKEN_FILE is not set. */
 export const TOKEN_FILE_NAME = "slack-token";
@@ -26,13 +27,12 @@ type Uid = number | undefined;
  * no uid, so there the NTFS ACL is the owner's job and boot says so (WIN32_ACL_NOTICE).
  */
 const readTokenFile = (path: string, platform: string, uid: Uid): string => {
-  // POSIX: the path is resolved once here and opened with O_NOFOLLOW, so a link put at that name afterwards is refused
-  // instead of followed. A link the user set up on purpose still works: it is resolved before the open.
+  // `path` is already resolved (see tokenFileToRead). POSIX opens it as-is with O_NOFOLLOW, so a link put at that name
+  // after it was resolved is refused, never followed.
   const posix = platform !== "win32";
   let fd: number;
   try {
-    const target = posix ? realpathSync(path) : path;
-    fd = openSync(target, constants.O_RDONLY | (posix ? constants.O_NONBLOCK | constants.O_NOFOLLOW : 0));
+    fd = openSync(path, constants.O_RDONLY | (posix ? constants.O_NONBLOCK | constants.O_NOFOLLOW : 0));
   } catch {
     throw new TokenFileError(`DORI_SLACK_TOKEN_FILE ${path} cannot be read`);
   }
@@ -68,11 +68,28 @@ export const slackToken = (
   env: Env = process.env,
   platform: string = process.platform,
   uid: Uid = process.getuid?.(),
+  configFile: string = configPath(),
 ): string | undefined => {
   const token = env["DORI_SLACK_TOKEN"];
   if (token) return token;
-  const path = env["DORI_SLACK_TOKEN_FILE"];
+  const path = tokenFileToRead(env, configFile);
   return path ? readTokenFile(path, platform, uid) : undefined;
+};
+
+/** Set by launch beside DORI_SLACK_TOKEN_FILE to the same string: the path a lane gets is already resolved. */
+export const RESOLVED_MARK = "DORI_SLACK_TOKEN_FILE_RESOLVED";
+
+/**
+ * The token file a reader opens, resolved exactly once. A lane's path was resolved and home-checked by its launcher,
+ * which marks it (RESOLVED_MARK equal to the path), so the lane opens that string as it is: resolving it again would
+ * follow a link put there since. Any other path (the lead's own setting, `dori boot`, `dori send`) is resolved once
+ * here and home-checked (homeTokenFile), and that same string is the one read. A stale inherited mark only matches when
+ * the path is the very string it marked, and then reading it as-is is the stricter choice.
+ */
+export const tokenFileToRead = (env: Env, configFile: string): string | undefined => {
+  const named = env["DORI_SLACK_TOKEN_FILE"];
+  if (!named) return undefined;
+  return env[RESOLVED_MARK] === named ? named : homeTokenFile(env, configFile);
 };
 
 /** Boot's note about a token taken from a file on Windows, whose ACL nothing checks; undefined everywhere else. */
@@ -147,6 +164,7 @@ export const homeTokenFile = (env: Env, configFile: string): string | undefined 
 export const laneTokenEnv = (env: Env, configFile: string): Record<string, string> => {
   const pass = (file: string): Record<string, string> => ({
     DORI_SLACK_TOKEN_FILE: file,
+    [RESOLVED_MARK]: file,
     DORI_SLACK_TOKEN: "",
     [OUTSIDE_HOME_FLAG]: "",
   });

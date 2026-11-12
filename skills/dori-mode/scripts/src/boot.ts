@@ -10,7 +10,7 @@ import { reconcilePanes } from "./reconcile.ts";
 import { runtimesOf } from "./run.ts";
 import { listSessions } from "./sessions.ts";
 import { ReportError, type Reports } from "./reports.ts";
-import { homeTokenFile, slackToken, TokenFileError, tokenFileNotice } from "./slack-token.ts";
+import { slackToken, TokenFileError, tokenFileNotice } from "./slack-token.ts";
 import type { Worklog } from "./worklog.ts";
 import { worklogLines } from "./worklog-render.ts";
 
@@ -59,8 +59,8 @@ export const envSlackCheck =
   ): SlackCheck =>
   async () => {
     // A token file outside this home is refused here too, so the lead sees it at boot and not only at a launch.
-    if (!env["DORI_SLACK_TOKEN"]) homeTokenFile(env, configFile);
-    const token = slackToken(env, platform);
+    // One resolution: the string home-checked is the string read (tokenFileToRead).
+    const token = slackToken(env, platform, process.getuid?.(), configFile);
     const auth = await slackAuthCheck(token ? client(token) : null)();
     const notice = tokenFileNotice(env, platform);
     return auth && notice ? { ...auth, notice } : auth;

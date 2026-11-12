@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "
 import { join, relative } from "node:path";
 
 import { launchLane } from "../src/launch.ts";
-import { laneTokenEnv, OUTSIDE_HOME_FLAG, TokenFileError } from "../src/slack-token.ts";
+import { laneTokenEnv, OUTSIDE_HOME_FLAG, RESOLVED_MARK, TokenFileError } from "../src/slack-token.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
 
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
@@ -107,11 +107,17 @@ test("an inherited DORI_SLACK_TOKEN_FILE outside this home is refused unless the
   // Allowed by the flag, and the flag is passed empty so the lane does not carry the permission onward.
   expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: other, [OUTSIDE_HOME_FLAG]: "1" }, config)).toEqual({
     DORI_SLACK_TOKEN_FILE: real(other),
+    [RESOLVED_MARK]: real(other),
     DORI_SLACK_TOKEN: "",
     [OUTSIDE_HOME_FLAG]: "",
   });
   // Unset, the home's own file is used; a file inside the home is passed as named.
-  const ok = (file: string) => ({ DORI_SLACK_TOKEN_FILE: real(file), DORI_SLACK_TOKEN: "", [OUTSIDE_HOME_FLAG]: "" });
+  const ok = (file: string) => ({
+    DORI_SLACK_TOKEN_FILE: real(file),
+    [RESOLVED_MARK]: real(file),
+    DORI_SLACK_TOKEN: "",
+    [OUTSIDE_HOME_FLAG]: "",
+  });
   expect(laneTokenEnv({}, config)).toEqual(ok(join(home, "slack-token")));
   const nested = tokenFile(join(home, "keys"), "xoxb-nested\n", 0o600);
   expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: nested }, config)).toEqual(ok(nested));
