@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { configPath, fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { laneGoalActive } from "./goal-record.ts";
@@ -149,7 +150,11 @@ const startLane = async (
   const group = deps.config.laneWorkspace || undefined;
   let env: Record<string, string>;
   try {
-    env = laneTokenEnv(process.env, configPath());
+    // The lane runs in another directory, so a relative DORI_CONFIG is passed absolute: the lane then finds the same
+    // home, and the token-file mark (checked against that home) holds there.
+    const config = resolve(configPath());
+    const relativeConfig = process.env["DORI_CONFIG"] !== undefined && process.env["DORI_CONFIG"] !== config;
+    env = { ...laneTokenEnv(process.env, config), ...(relativeConfig ? { DORI_CONFIG: config } : {}) };
   } catch (e) {
     if (e instanceof TokenFileError) throw new LaunchError(`token file refused: ${e.message}`);
     throw e;

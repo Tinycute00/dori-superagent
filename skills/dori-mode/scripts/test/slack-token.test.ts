@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import { launchLane } from "../src/launch.ts";
 import { laneTokenEnv, OUTSIDE_HOME_FLAG, RESOLVED_HOME, RESOLVED_MARK, TokenFileError } from "../src/slack-token.ts";
@@ -36,10 +36,10 @@ const tokenFile = (dir: string, text: string, mode: number): string => {
   return file;
 };
 
-const launchArgv = async (home: string, key: string): Promise<string[][]> => {
+const launchArgv = async (home: string, key: string, config = join(home, "config.json")): Promise<string[][]> => {
   const brief = join(state.dir, "brief.md");
   writeFileSync(brief, "# brief\n");
-  process.env["DORI_CONFIG"] = join(home, "config.json");
+  process.env["DORI_CONFIG"] = config;
   world = newWorld();
   await launchLane(depsFor(world, fakeClock(T0), join(home, "state"), { runtime: "hc" }), {
     key,
@@ -177,4 +177,15 @@ test("a launch with a token file outside this home is refused before any session
     /^token file refused: DORI_SLACK_TOKEN_FILE .* is outside this home/,
   );
   expect(world.calls.some((c) => c[0] === "hc" && c.includes("run"))).toBe(false);
+});
+
+test("a relative DORI_CONFIG is passed to the lane absolute, so the lane finds the same home and its token-file mark holds", async () => {
+  const home = join(state.dir, "rel-config-home");
+  const file = tokenFile(home, "xoxb-rel\n", 0o600);
+  delete process.env["DORI_SLACK_TOKEN"];
+  delete process.env["DORI_SLACK_TOKEN_FILE"];
+  const calls = await launchArgv(home, "relconf-lane", relative(process.cwd(), join(home, "config.json")));
+  const create = calls.find((c) => c[0] === "hc" && c.includes("--bg")) ?? [];
+  expect(create).toContain(`DORI_CONFIG=${resolve(join(home, "config.json"))}`);
+  expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${real(file)}`);
 });
