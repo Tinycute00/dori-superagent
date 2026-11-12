@@ -100,7 +100,8 @@ export const homeTokenFile = (env: Env, configFile: string): string | undefined 
   if (!named) return undefined;
   const home = resolve(dirname(configFile));
   const file = resolve(named);
-  if (inside(home, file) || env[OUTSIDE_HOME_FLAG] === "1") return file;
+  // The resolved path is what the lane gets: a link swapped after this check is never followed by the lane.
+  if (inside(home, file) || env[OUTSIDE_HOME_FLAG] === "1") return real(file);
   throw new TokenFileError(
     `DORI_SLACK_TOKEN_FILE ${file} is outside this home (${home}), so it may be another home's; set ${OUTSIDE_HOME_FLAG}=1 if it is meant`,
   );
@@ -130,7 +131,7 @@ export const laneTokenEnv = (env: Env, configFile: string): Record<string, strin
     // The home's own file gets the same check as a named one: a link from it to another home's file is outside.
     if (!inside(home, own))
       throw new TokenFileError(`${own} links outside this home (${home}), so it may be another home's token file`);
-    return pass(own);
+    return pass(real(own));
   }
   // No token file: nothing is added, except that an inherited allow flag is emptied so no lane carries it onward.
   return env[OUTSIDE_HOME_FLAG] ? { [OUTSIDE_HOME_FLAG]: "" } : {};

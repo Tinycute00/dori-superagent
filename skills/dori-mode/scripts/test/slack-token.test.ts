@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
-import { chmodSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { launchLane } from "../src/launch.ts";
@@ -31,6 +31,9 @@ afterEach(() => {
   }
   state.done();
 });
+
+// The lane gets the real path (links resolved, e.g. macOS /var -> /private/var); every path here is under state.dir.
+const real = (p: string): string => join(realpathSync(state.dir), relative(state.dir, p));
 
 const tokenFile = (dir: string, text: string, mode: number): string => {
   mkdirSync(dir, { recursive: true });
@@ -65,7 +68,7 @@ test("the create argv for a lane never contains the token value, only the token 
   // Then no argv of any call holds a token, and the lane gets the path with DORI_SLACK_TOKEN blanked.
   expect(calls.flat().filter((arg) => arg.includes("xoxb-"))).toEqual([]);
   const create = calls.find((c) => c[0] === "hc" && c.includes("run") && c.includes("--bg")) ?? [];
-  expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${file}`);
+  expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${real(file)}`);
   expect(create).toContain("DORI_SLACK_TOKEN=");
 });
 
@@ -101,7 +104,7 @@ test("a relative token-file path is passed absolute, since the lane runs in anot
   const file = tokenFile(home, "xoxb-rel\n", 0o600);
   process.env["DORI_SLACK_TOKEN_FILE"] = relative(process.cwd(), file);
   const create = (await launchArgv(home, "rel-lane")).find((c) => c[0] === "hc" && c.includes("--bg")) ?? [];
-  expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${file}`);
+  expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${real(file)}`);
 });
 
 test("a token file the launcher names is passed even when missing, so the lane never falls back to the core's token", async () => {
@@ -110,7 +113,7 @@ test("a token file the launcher names is passed even when missing, so the lane n
   const create =
     (await launchArgv(join(state.dir, "named-home"), "named-lane")).find((c) => c[0] === "hc" && c.includes("--bg")) ??
     [];
-  expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${absent}`);
+  expect(create).toContain(`DORI_SLACK_TOKEN_FILE=${real(absent)}`);
   expect(create).toContain("DORI_SLACK_TOKEN=");
 });
 
@@ -167,12 +170,12 @@ test("an inherited DORI_SLACK_TOKEN_FILE outside this home is refused unless the
   expect(() => laneTokenEnv({ DORI_SLACK_TOKEN_FILE: other }, config)).toThrow(/is outside this home/);
   // Allowed by the flag, and the flag is passed empty so the lane does not carry the permission onward.
   expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: other, [OUTSIDE_HOME_FLAG]: "1" }, config)).toEqual({
-    DORI_SLACK_TOKEN_FILE: other,
+    DORI_SLACK_TOKEN_FILE: real(other),
     DORI_SLACK_TOKEN: "",
     [OUTSIDE_HOME_FLAG]: "",
   });
   // Unset, the home's own file is used; a file inside the home is passed as named.
-  const ok = (file: string) => ({ DORI_SLACK_TOKEN_FILE: file, DORI_SLACK_TOKEN: "", [OUTSIDE_HOME_FLAG]: "" });
+  const ok = (file: string) => ({ DORI_SLACK_TOKEN_FILE: real(file), DORI_SLACK_TOKEN: "", [OUTSIDE_HOME_FLAG]: "" });
   expect(laneTokenEnv({}, config)).toEqual(ok(join(home, "slack-token")));
   const nested = join(home, "keys", "slack-token");
   expect(laneTokenEnv({ DORI_SLACK_TOKEN_FILE: nested }, config)).toEqual(ok(nested));
@@ -195,6 +198,14 @@ test("the home's own slack-token gets the same link check, and an inherited allo
   const bare = join(state.dir, "bare-home", "config.json");
   expect(laneTokenEnv({}, bare)).toEqual({});
   expect(laneTokenEnv({ [OUTSIDE_HOME_FLAG]: "1" }, bare)).toEqual({ [OUTSIDE_HOME_FLAG]: "" });
+  // The lane gets the resolved path: a link inside the home that is later swapped to another home's file is not used.
+  const homeL = join(state.dir, "relink-home");
+  const target = tokenFile(join(homeL, "keys"), "xoxb-own\n", 0o600);
+  symlinkSync(target, join(homeL, "slack-token"));
+  const passed = laneTokenEnv({}, join(homeL, "config.json"))["DORI_SLACK_TOKEN_FILE"];
+  expect(passed).toBe(realpathSync(target));
+  const named = laneTokenEnv({ DORI_SLACK_TOKEN_FILE: join(homeL, "slack-token") }, join(homeL, "config.json"));
+  expect(named["DORI_SLACK_TOKEN_FILE"]).toBe(realpathSync(target));
 });
 
 test("on Windows a token taken from a file comes with a notice that its ACL is not checked", () => {
