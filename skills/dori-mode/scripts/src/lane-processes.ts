@@ -1,4 +1,4 @@
-import type { SessionRef } from "../../../../src/runtime/types.ts";
+import type { RuntimeKind, SessionRef } from "../../../../src/runtime/types.ts";
 import type { ChosenRuntimes, Runner } from "./run.ts";
 import { descendants, PS_ARGV, type Proc, parseProcs } from "./session-id.ts";
 
@@ -8,6 +8,23 @@ type Snapshot = readonly Proc[] | string;
 const readTable = async (run: Runner): Promise<Snapshot> => {
   const r = await run(PS_ARGV);
   return r.code === 0 ? parseProcs(r.out) : r.err || `ps exited ${r.code}`;
+};
+
+/** The variable each runtime sets to the session's own id in the environment of the session's processes. */
+const SESSION_VAR: Readonly<Record<RuntimeKind, string>> = { herdr: "HERDR_PANE_ID", hc: "HC_TERMINAL_ID" };
+
+/**
+ * The root pid comes from the runtime, which may run the session on another host, while `ps` reads this host. The root
+ * counts as the session's only when the process with that pid here carries the session's own id; undefined when it
+ * does, else why not. Only the lane's own runtime variable counts: a process can inherit the other runtime's id.
+ */
+const notOwnedHere = async (run: Runner, ref: SessionRef, root: number): Promise<string | undefined> => {
+  const env = await run(["ps", "eww", "-o", "command=", "-p", String(root)]);
+  if (env.code !== 0 || !env.out.trim()) return `session root ${root} could not be read on this host`;
+  const marker = `${SESSION_VAR[ref.runtime]}=${ref.id}`;
+  return env.out.split(/\s+/).includes(marker)
+    ? undefined
+    : `session root ${root} on this host does not carry ${marker} (the session may run on another host)`;
 };
 
 /**
@@ -24,6 +41,8 @@ export const laneProcesses = async (rts: ChosenRuntimes, run: Runner, ref: Sessi
       () => undefined,
     );
   if (root === undefined) return "the session reported no root process";
+  const doubt = await notOwnedHere(run, ref, root);
+  if (doubt) return doubt;
   const table = await readTable(run);
   if (typeof table === "string") return table;
   return [...table.filter((p) => p.pid === root), ...descendants(table, root)];
