@@ -70,9 +70,14 @@ test("heavy admission's probe ends on the memory read: no disk, swap or session 
     calls.push(argv.join(" "));
     return host(argv, opts);
   });
-  expect(s).toEqual({ load1: 0.5, memFreePct: 40 });
+  expect(s).toEqual({ load1: 0.5, memFreePct: 40, loadKnown: true, memKnown: true });
   expect(calls.at(-1)).toBe("cat /proc/meminfo");
   expect(calls.some((c) => c.startsWith("df") || c.includes("swapusage"))).toBe(false);
+});
+
+test("an unreadable memory value is flagged unknown for admission while the guard keeps its 100% fallback", async () => {
+  const s = await sampleLoadMemory(linuxHost(null));
+  expect(s).toMatchObject({ memFreePct: 100, memKnown: false, loadKnown: true });
 });
 
 test("the host guard keeps memory at 100% when neither memory_pressure nor /proc/meminfo works", async () => {

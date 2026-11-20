@@ -77,7 +77,12 @@ const heavy: Command = async ({ rest, config }) => {
     },
     clock: realClock,
     host: async (): Promise<HeavyHost> => {
-      return { ...(await sampleLoadMemory(run)), memTotalGb: totalmem() / 1024 ** 3 };
+      const s = await sampleLoadMemory(run);
+      return {
+        load1: s.loadKnown ? s.load1 : Number.NaN,
+        memFreePct: s.memKnown ? s.memFreePct : Number.NaN,
+        memTotalGb: totalmem() / 1024 ** 3,
+      };
     },
     alive: pidAlive,
     pid: process.pid,

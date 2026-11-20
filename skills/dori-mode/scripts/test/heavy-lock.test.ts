@@ -9,6 +9,7 @@ import {
   loadFlock,
   underLock,
   WARMUP_MS,
+  SAMPLE_MAX_AGE_MS,
 } from "../src/heavy-slot.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
@@ -165,4 +166,65 @@ test("every owner probe runs before the host sample, and a dead owner's slot is 
   expect(events.at(-1)).toBe("host");
   expect(events.filter((e) => e === "host")).toHaveLength(1);
   expect(slot).toBe(join(dir, "slot.2"));
+});
+
+const floorFull = (dir: string): void => {
+  mkdirSync(join(dir, "slot.1"), { recursive: true });
+  writeFileSync(join(dir, "slot.1", "owner"), `101 running ${new Date(Date.now() - 2 * WARMUP_MS).toISOString()}`);
+};
+
+const scriptedClock = (times: number[]) => ({
+  now: () => (times.length > 1 ? (times.shift() as number) : (times[0] as number)),
+  sleep: async () => {
+    throw new Error("waits");
+  },
+});
+
+test("a host sample that is stale at the claim is taken again, and the fresh one decides", async () => {
+  const dir = join(state.dir, "heavy");
+  floorFull(dir);
+  const samples = [80, 10];
+  const logs: string[] = [];
+  const deps = {
+    dir,
+    policy,
+    pid: 7,
+    alive: () => true,
+    log: (l: string) => logs.push(l),
+    host: async () => host(samples.shift() ?? 10),
+    clock: scriptedClock([0, SAMPLE_MAX_AGE_MS + 1_000, SAMPLE_MAX_AGE_MS + 1_000]),
+  };
+  await expect(acquireSlot(deps, "stale-once", 1)).rejects.toThrow("waits");
+  expect(samples).toEqual([]);
+  expect(heldSlots(deps)).toHaveLength(1);
+  expect(logs[0]).toContain("memory 10% free");
+});
+
+test("a sample that keeps going stale makes the job wait instead of claiming on it", async () => {
+  const dir = join(state.dir, "heavy");
+  floorFull(dir);
+  let sampled = 0;
+  let t = 0;
+  const logs: string[] = [];
+  const deps = {
+    dir,
+    policy,
+    pid: 7,
+    alive: () => true,
+    log: (l: string) => logs.push(l),
+    host: async () => {
+      sampled++;
+      return host(80);
+    },
+    clock: {
+      now: () => (t += SAMPLE_MAX_AGE_MS + 1),
+      sleep: async () => {
+        throw new Error("waits");
+      },
+    },
+  };
+  await expect(acquireSlot(deps, "always-stale", 1)).rejects.toThrow("waits");
+  expect(sampled).toBe(3);
+  expect(heldSlots(deps)).toHaveLength(1);
+  expect(logs[0]).toEndWith("host sample went stale before the claim");
 });

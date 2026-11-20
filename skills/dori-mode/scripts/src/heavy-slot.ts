@@ -23,19 +23,26 @@ export type HeavyDecision = { readonly limit: number; readonly admit: boolean; r
  * nothing here ever ends a running job.
  */
 export const heavyAdmission = (p: HeavyPolicy, host: HeavyHost, running: number, warming: number): HeavyDecision => {
+  // NaN means the probe could not read the value: no headroom above the floor rather than a guess.
+  const memKnown = Number.isFinite(host.memFreePct),
+    loadKnown = Number.isFinite(host.load1);
   const freeGb = (host.memFreePct / 100) * host.memTotalGb;
   const spareGb = freeGb - (p.memFreeMinPct / 100) * host.memTotalGb - warming * p.jobMemGb;
   // The tolerance keeps a job that leaves exactly the floor (an exact 1.0 computed as 0.9999...) admitted.
-  const fits = Math.floor(spareGb / p.jobMemGb + 1e-9);
-  const loadOk = host.load1 < p.maxLoad;
+  const fits = memKnown ? Math.floor(spareGb / p.jobMemGb + 1e-9) : Number.NEGATIVE_INFINITY;
+  const loadOk = loadKnown && host.load1 < p.maxLoad;
   const wanted = loadOk ? running + fits : Math.min(running, running + fits);
   const limit = Math.max(p.minSlots, Math.min(p.maxSlots, wanted));
   const bound = wanted >= p.maxSlots ? "ceiling" : wanted < p.minSlots ? "floor" : !loadOk ? "load" : "memory";
   const reason =
     `limit ${limit} of ${p.minSlots}-${p.maxSlots} (${bound}), running ${running}${warming ? ` (${warming} starting)` : ""}: ` +
-    `memory ${+host.memFreePct.toFixed(1)}% free (${freeGb.toFixed(1)} of ${host.memTotalGb.toFixed(0)} GB), ` +
-    `${p.jobMemGb} GB per job above ${p.memFreeMinPct}% fits ${fits >= 0 ? `${fits} more` : `${-fits} fewer`}; ` +
-    `load ${host.load1.toFixed(1)} ${loadOk ? "<" : ">="} ${p.maxLoad}`;
+    (memKnown
+      ? `memory ${+host.memFreePct.toFixed(1)}% free (${freeGb.toFixed(1)} of ${host.memTotalGb.toFixed(0)} GB), ` +
+        `${p.jobMemGb} GB per job above ${p.memFreeMinPct}% fits ${fits >= 0 ? `${fits} more` : `${-fits} fewer`}; `
+      : "memory unknown (could not be read); ") +
+    (loadKnown
+      ? `load ${host.load1.toFixed(1)} ${loadOk ? "<" : ">="} ${p.maxLoad}`
+      : "load unknown (could not be read)");
   return { limit, admit: running < limit, reason };
 };
 
@@ -105,6 +112,8 @@ const claim = (deps: SlotDeps, slot: string, label: string): string => {
 };
 
 const LOCK_POLL_MS = 50;
+export const SAMPLE_MAX_AGE_MS = 1_000;
+const SAMPLE_TRIES = 3;
 // Same values in glibc <sys/file.h> and xnu <sys/fcntl.h>.
 const LOCK_EX = 2,
   LOCK_NB = 4,
@@ -168,9 +177,20 @@ export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000
       const free = Array.from({ length: deps.policy.maxSlots }, (_, i) => join(deps.dir, `slot.${i + 1}`)).find(
         (s) => !taken.has(s),
       );
-      const host = await deps.host();
-      const d = heavyAdmission(deps.policy, host, held.length, warmingCount(held, deps.clock.now()));
-      return { d, slot: d.admit && free !== undefined ? claim(deps, free, label) : null };
+      // A sample older than SAMPLE_MAX_AGE_MS at the claim (whatever slowed it) is taken again and decided again; after
+      // SAMPLE_TRIES stale samples the job waits for the next poll instead of claiming on an old figure.
+      for (let tries = 1; ; tries++) {
+        const host = await deps.host();
+        const sampledAt = deps.clock.now();
+        const d = heavyAdmission(deps.policy, host, held.length, warmingCount(held, sampledAt));
+        if (!d.admit || free === undefined) return { d, slot: null };
+        if (deps.clock.now() - sampledAt <= SAMPLE_MAX_AGE_MS) return { d, slot: claim(deps, free, label) };
+        if (tries === SAMPLE_TRIES)
+          return {
+            d: { ...d, admit: false, reason: `${d.reason}; host sample went stale before the claim` },
+            slot: null,
+          };
+      }
     });
     if (slot) {
       deps.log(`HEAVY_START ${label} ${d.reason}`);

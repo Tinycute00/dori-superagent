@@ -16,13 +16,20 @@ const num = (s: string | undefined, fallback: number): number => {
 };
 
 /** Load, then free memory as the last read: what heavy admission decides on, with nothing slow after the memory read. */
-export const sampleLoadMemory = async (run: Runner): Promise<Pick<HostSample, "load1" | "memFreePct">> => {
+export type LoadMemory = Pick<HostSample, "load1" | "memFreePct"> & {
+  /** False when the value above is the guard's quiet fallback (0 load, 100% free) rather than a reading. */
+  readonly loadKnown: boolean;
+  readonly memKnown: boolean;
+};
+
+export const sampleLoadMemory = async (run: Runner): Promise<LoadMemory> => {
   const load = await run(["sysctl", "-n", "vm.loadavg"]);
   const loadLinux = load.code === 0 ? null : await run(["cat", "/proc/loadavg"]);
-  const load1 = num(
+  const loadRead = Number(
     (load.code === 0 ? load.out.replace(/[{}]/g, "").trim() : (loadLinux?.out ?? "")).split(/\s+/)[0],
-    0,
   );
+  const loadKnown = (load.code === 0 || loadLinux?.code === 0) && Number.isFinite(loadRead);
+  const load1 = loadKnown ? loadRead : 0;
   const mp = await run(["memory_pressure", "-Q"]);
   const memInfo = mp.code === 0 ? null : await run(["cat", "/proc/meminfo"]);
   const kb = (key: string): number | null => {
@@ -31,13 +38,15 @@ export const sampleLoadMemory = async (run: Runner): Promise<Pick<HostSample, "l
   };
   const total = kb("MemTotal"),
     available = kb("MemAvailable");
-  const memFreePct =
+  const pressure = mp.code === 0 ? /free percentage: (\d+)%/.exec(mp.out)?.[1] : undefined;
+  const memRead =
     mp.code === 0
-      ? num(/free percentage: (\d+)%/.exec(mp.out)?.[1], 100)
+      ? Number(pressure)
       : total !== null && total > 0 && available !== null
         ? (available / total) * 100
-        : 100;
-  return { load1, memFreePct };
+        : Number.NaN;
+  const memKnown = Number.isFinite(memRead);
+  return { load1, memFreePct: memKnown ? memRead : 100, loadKnown, memKnown };
 };
 
 export const sampleHost = async (

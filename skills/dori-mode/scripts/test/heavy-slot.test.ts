@@ -112,3 +112,19 @@ test("a label with spaces keeps its start time, so an old job no longer counts a
   expect(held[0]?.owner).toEqual({ pid: 42, label: "browser suite", since: T0 - 10 * 60_000 });
   expect(warmingCount(held, T0)).toBe(0);
 });
+
+test("unknown memory gives no headroom above the floor and says so", () => {
+  const d = heavyAdmission(policy, { load1: 2, memFreePct: Number.NaN, memTotalGb: 30 }, 0, 0);
+  expect(d).toMatchObject({ limit: 1, admit: true });
+  expect(d.reason).toContain("memory unknown");
+  expect(heavyAdmission(policy, { load1: 2, memFreePct: Number.NaN, memTotalGb: 30 }, 1, 0)).toMatchObject({
+    limit: 1,
+    admit: false,
+  });
+});
+
+test("unknown load admits nothing above the floor, however much memory is free", () => {
+  const d = heavyAdmission(policy, { load1: Number.NaN, memFreePct: 90, memTotalGb: 30 }, 1, 0);
+  expect(d).toMatchObject({ limit: 1, admit: false });
+  expect(d.reason).toContain("load unknown");
+});
