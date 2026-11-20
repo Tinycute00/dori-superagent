@@ -111,6 +111,20 @@ const tryTake = (deps: SlotDeps, n: number, label: string): string | null => {
   return claim();
 };
 
+const claimOrder = (h: HeldSlot): number =>
+  !h.owner ? Number.POSITIVE_INFINITY : Number.isNaN(h.owner.since) ? Number.NEGATIVE_INFINITY : h.owner.since;
+
+// Waiters that pass the check together each claim a free number, so a claim only stands when it is among the first
+// `limit` held slots by claim time (then slot number); every process sorts the same files the same way.
+const withinLimit = (deps: SlotDeps, slot: string, limit: number): boolean => {
+  const order = heldSlots(deps).sort((a, b) => {
+    const x = claimOrder(a),
+      y = claimOrder(b);
+    return x === y ? 0 : x < y ? -1 : 1;
+  });
+  return order.findIndex((h) => h.slot === slot) < limit;
+};
+
 export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000): Promise<string> => {
   mkdirSync(deps.dir, { recursive: true });
   let last = "";
@@ -120,10 +134,13 @@ export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000
     if (d.admit) {
       for (let n = 1; n <= deps.policy.maxSlots; n++) {
         const slot = tryTake(deps, n, label);
-        if (slot) {
+        if (!slot) continue;
+        if (withinLimit(deps, slot, d.limit)) {
           deps.log(`HEAVY_START ${label} ${d.reason}`);
           return slot;
         }
+        releaseSlot(slot);
+        break;
       }
     }
     if (d.reason !== last) deps.log(`HEAVY_WAIT ${label} ${d.reason}`);

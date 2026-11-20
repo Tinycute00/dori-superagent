@@ -49,6 +49,20 @@ test("a job still starting is reserved at the per-job estimate, since free memor
   expect(heavyAdmission(policy, host(50), 1, 1).limit).toBe(2);
 });
 
+test("waiters that pass the check together cannot take more slots than the limit", async () => {
+  const dir = join(state.dir, "heavy");
+  const clock = {
+    ...fakeClock(Date.parse("2026-01-01T12:00:00.000Z")),
+    sleep: async () => {
+      throw new Error("stop");
+    },
+  };
+  const deps = { dir, policy, clock, alive: () => true, log: () => {}, host: async () => host(10) };
+  const results = await Promise.allSettled([1, 2, 3].map((pid) => acquireSlot({ ...deps, pid }, `w${pid}`, 1)));
+  expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+  expect(heldSlots(deps)).toHaveLength(1);
+});
+
 test("a shrunk limit leaves every running slot in place while a new job waits", async () => {
   const dir = join(state.dir, "heavy");
   const T0 = Date.parse("2026-01-01T12:00:00.000Z");
