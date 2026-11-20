@@ -1,16 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  acquireSlot,
-  type HeavyPolicy,
-  HeavyAdmissionError,
-  heldSlots,
-  loadFlock,
-  underLock,
-  WARMUP_MS,
-  SAMPLE_MAX_AGE_MS,
-} from "../src/heavy-slot.ts";
+import { HeavyAdmissionError, loadFlock, underLock } from "../src/heavy-lock.ts";
+import { acquireSlot, type HeavyPolicy, heldSlots, WARMUP_MS, SAMPLE_MAX_AGE_MS } from "../src/heavy-slot.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
 const policy: HeavyPolicy = { minSlots: 1, maxSlots: 4, maxLoad: 10, jobMemGb: 4, memFreeMinPct: 15 };
@@ -58,7 +50,7 @@ test("a lock holder that is killed releases the lock, with no age or pid guess",
     [
       "bun",
       "-e",
-      `const { underLock } = await import(${JSON.stringify(join(import.meta.dir, "../src/heavy-slot.ts"))}); await underLock(${JSON.stringify(dir)}, () => { console.log("LOCKED"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); });`,
+      `const { underLock } = await import(${JSON.stringify(join(import.meta.dir, "../src/heavy-lock.ts"))}); await underLock(${JSON.stringify(dir)}, () => { console.log("LOCKED"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); });`,
     ],
     { stdout: "pipe" },
   );
@@ -192,7 +184,11 @@ test("a host sample that is stale at the claim is taken again, and the fresh one
     alive: () => true,
     log: (l: string) => logs.push(l),
     host: async () => host(samples.shift() ?? 10),
-    clock: scriptedClock([0, SAMPLE_MAX_AGE_MS + 1_000, SAMPLE_MAX_AGE_MS + 1_000]),
+    clock: scriptedClock([Date.now()]),
+    elapsedMs: (() => {
+      const times = [0, SAMPLE_MAX_AGE_MS + 1_000];
+      return () => (times.length > 1 ? (times.shift() as number) : (times[0] as number));
+    })(),
   };
   await expect(acquireSlot(deps, "stale-once", 1)).rejects.toThrow("waits");
   expect(samples).toEqual([]);
@@ -216,12 +212,8 @@ test("a sample that keeps going stale makes the job wait instead of claiming on 
       sampled++;
       return host(80);
     },
-    clock: {
-      now: () => (t += SAMPLE_MAX_AGE_MS + 1),
-      sleep: async () => {
-        throw new Error("waits");
-      },
-    },
+    clock: scriptedClock([Date.now()]),
+    elapsedMs: () => (t += SAMPLE_MAX_AGE_MS + 1),
   };
   await expect(acquireSlot(deps, "always-stale", 1)).rejects.toThrow("waits");
   expect(sampled).toBe(3);

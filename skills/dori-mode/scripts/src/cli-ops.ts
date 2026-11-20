@@ -8,13 +8,12 @@ import { watchTick } from "./done-flow.ts";
 import { freshnessTick } from "./freshness.ts";
 import {
   acquireSlot,
+  decideNow,
   type HeavyHost,
-  heavyAdmission,
   heldSlots,
   pidAlive,
   releaseSlot,
   type SlotDeps,
-  warmingCount,
 } from "./heavy-slot.ts";
 import { guardTick, sampleHost, sampleLoadMemory } from "./host-guard.ts";
 import { fetchHttp } from "./messenger/http.ts";
@@ -90,7 +89,7 @@ const heavy: Command = async ({ rest, config }) => {
   };
   if (rest[0] === "--status") {
     const held = heldSlots(deps);
-    const d = heavyAdmission(deps.policy, await deps.host(), held.length, warmingCount(held, Date.now()));
+    const d = await decideNow(deps, held);
     console.log(`HEAVY ${d.admit ? "OPEN" : "FULL"} ${d.reason}`);
     for (const h of held)
       console.log(

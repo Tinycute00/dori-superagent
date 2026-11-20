@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { HeavyAdmissionError } from "../src/heavy-lock.ts";
 import {
   acquireSlot,
+  decideNow,
   type HeavyPolicy,
-  HeavyAdmissionError,
   heldSlots,
   pidAlive,
   SAMPLE_MAX_AGE_MS,
@@ -44,8 +45,13 @@ const slowHost = (dir: string) => {
       t += SAMPLE_MAX_AGE_MS + 500;
       return { load1: 2, memFreePct: 80, memTotalGb: 30 };
     },
+    elapsedMs: () => t,
     clock: {
-      now: () => t,
+      // The wall clock steps back 2 s on every read: the age must not depend on it.
+      now: (() => {
+        let wall = Date.now();
+        return () => (wall -= 2_000);
+      })(),
       sleep: async () => {
         throw new Error("waits");
       },
@@ -67,8 +73,9 @@ test("time spent inside host() counts toward the sample age, so a slow probe can
 test("a sample that stays slow still lets the floor run, decided on unknown readings", async () => {
   const dir = join(state.dir, "heavy");
   mkdirSync(dir, { recursive: true });
-  const { deps, logs } = slowHost(dir);
+  const { deps, logs, sampled } = slowHost(dir);
   expect(await acquireSlot(deps, "floor", 1)).toBe(join(dir, "slot.1"));
+  expect(sampled()).toBe(3);
   expect(logs[0]).toContain("(floor)");
 });
 
@@ -102,4 +109,30 @@ test.skipIf(asRoot)("a slot directory that cannot be listed stops admission with
   } finally {
     chmodSync(dir, 0o755);
   }
+});
+
+// Two samples: the first slow (stale), the second fast; the stale one must decide nothing in either direction.
+const twoSamples = (first: number, second: number) => {
+  let t = 0;
+  const loads = [first, second];
+  return {
+    policy,
+    clock: { now: () => Date.now(), sleep: async () => {} },
+    elapsedMs: () => t,
+    host: async () => {
+      const load1 = loads.shift() ?? second;
+      if (loads.length === 1) t += SAMPLE_MAX_AGE_MS + 500;
+      return { load1, memFreePct: 80, memTotalGb: 30 };
+    },
+  };
+};
+
+test("a stale sample decides neither a start nor a wait: the fresh one after it does", async () => {
+  const held = [{ slot: "slot.1", owner: { pid: 1, label: "running", since: 0 } }];
+  const rising = await decideNow(twoSamples(2, 12), held);
+  expect(rising).toMatchObject({ admit: false, limit: 1 });
+  expect(rising.reason).toContain("load 12.0 >= 10");
+  const falling = await decideNow(twoSamples(12, 2), held);
+  expect(falling).toMatchObject({ admit: true, limit: 4 });
+  expect(falling.reason).toContain("load 2.0 < 10");
 });

@@ -1,7 +1,7 @@
-import { dlopen, FFIType } from "bun:ffi";
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { HeavyAdmissionError, underLock } from "./heavy-lock.ts";
 import type { Clock } from "./run.ts";
 
 export type HeavyPolicy = {
@@ -54,6 +54,8 @@ export type SlotDeps = {
   readonly alive: (pid: number) => boolean;
   readonly pid: number;
   readonly log: (line: string) => void;
+  /** Monotonic milliseconds for the sample age; performance.now() unless a test drives it. */
+  readonly elapsedMs?: () => number;
 };
 
 const ORPHAN_MS = 60_000;
@@ -125,57 +127,28 @@ const claim = (deps: SlotDeps, slot: string, label: string): string => {
   return slot;
 };
 
-const LOCK_POLL_MS = 50;
 export const SAMPLE_MAX_AGE_MS = 1_000;
 const SAMPLE_TRIES = 3;
-// Same values in glibc <sys/file.h> and xnu <sys/fcntl.h>.
-const LOCK_EX = 2,
-  LOCK_NB = 4,
-  LOCK_UN = 8;
-const LIBC: Readonly<Record<string, string>> = { linux: "libc.so.6", darwin: "/usr/lib/libSystem.B.dylib" };
-
-export type Flock = (fd: number, operation: number) => number;
-
-export class HeavyAdmissionError extends Error {}
-
-// No lock means no heavy admission: a platform or libc without flock(2) stops `dori heavy` with this error instead of
-// admitting jobs unguarded.
-export const loadFlock = (platform: string = process.platform, path = LIBC[platform]): Flock => {
-  if (path === undefined)
-    throw new HeavyAdmissionError(`dori heavy needs flock(2); it supports linux (glibc) and macOS, not ${platform}`);
-  try {
-    const lib = dlopen(path, { flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } });
-    return (fd, operation) => lib.symbols.flock(fd, operation);
-  } catch (e) {
-    throw new HeavyAdmissionError(
-      `dori heavy needs flock(2) from ${path} on ${platform} and could not load it: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-};
-
-let systemFlock: Flock | undefined;
-const defaultFlock = (): Flock => (systemFlock ??= loadFlock());
-
-// Sampling the host, counting, deciding and claiming (a takeover included) run under one flock(2) on <dir>/.lock, so
-// no two waiters decide on the same count, take the same orphaned slot, or decide on memory sampled before a long wait
-// for the lock. The kernel drops the lock only when its holder exits, so a paused holder keeps it and a dead one never
-// leaves it behind; no age or pid guess is involved.
-export const underLock = async <T>(
-  dir: string,
-  section: () => T | Promise<T>,
-  load: () => Flock = defaultFlock,
-): Promise<T> => {
-  const flock = load();
-  const fd = openSync(join(dir, ".lock"), "a");
-  try {
-    while (flock(fd, LOCK_EX | LOCK_NB) !== 0) await Bun.sleep(LOCK_POLL_MS);
-    try {
-      return await section();
-    } finally {
-      flock(fd, LOCK_UN);
+// The decision on a fresh sample. Its age is measured once, on monotonic time from before the first reading (load)
+// to the end of the last (memory), so a slow probe or a wall-clock step cannot hide it. A sample older than
+// SAMPLE_MAX_AGE_MS decides nothing (no start, no wait reason) and is taken again; after SAMPLE_TRIES stale samples the
+// readings count as unknown, which admits the floor only. What follows the sample is arithmetic and the claim.
+export const decideNow = async (
+  deps: Pick<SlotDeps, "policy" | "host" | "clock" | "elapsedMs">,
+  held: readonly HeldSlot[],
+): Promise<HeavyDecision> => {
+  const elapsed = deps.elapsedMs ?? (() => performance.now());
+  for (let tries = 1; ; tries++) {
+    const started = elapsed();
+    const host = await deps.host();
+    const fresh = elapsed() - started <= SAMPLE_MAX_AGE_MS;
+    if (fresh || tries === SAMPLE_TRIES) {
+      const used = fresh ? host : { ...host, load1: Number.NaN, memFreePct: Number.NaN };
+      const d = heavyAdmission(deps.policy, used, held.length, warmingCount(held, deps.clock.now()));
+      return fresh
+        ? d
+        : { ...d, reason: `${d.reason}; host sample took over ${SAMPLE_MAX_AGE_MS} ms ${SAMPLE_TRIES} times` };
     }
-  } finally {
-    closeSync(fd);
   }
 };
 
@@ -191,22 +164,8 @@ export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000
       const free = Array.from({ length: deps.policy.maxSlots }, (_, i) => join(deps.dir, `slot.${i + 1}`)).find(
         (s) => !taken.has(s),
       );
-      // The age runs from before the first reading (load) to the claim, so a slow probe inside host() counts too. A
-      // sample older than SAMPLE_MAX_AGE_MS is taken again; after SAMPLE_TRIES stale samples the readings count as
-      // unknown, which admits the floor only.
-      for (let tries = 1; ; tries++) {
-        const startedAt = deps.clock.now();
-        const host = await deps.host();
-        const fresh = (): boolean => deps.clock.now() - startedAt <= SAMPLE_MAX_AGE_MS;
-        const stale = tries === SAMPLE_TRIES && !fresh();
-        const used = stale ? { ...host, load1: Number.NaN, memFreePct: Number.NaN } : host;
-        const d0 = heavyAdmission(deps.policy, used, held.length, warmingCount(held, startedAt));
-        const d = stale
-          ? { ...d0, reason: `${d0.reason}; host sample took over ${SAMPLE_MAX_AGE_MS} ms ${SAMPLE_TRIES} times` }
-          : d0;
-        if (!d.admit || free === undefined) return { d, slot: null };
-        if (stale || fresh()) return { d, slot: claim(deps, free, label) };
-      }
+      const d = await decideNow(deps, held);
+      return { d, slot: d.admit && free !== undefined ? claim(deps, free, label) : null };
     });
     if (slot) {
       deps.log(`HEAVY_START ${label} ${d.reason}`);
