@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { acquireSlot, releaseSlot } from "../src/heavy-slot.ts";
-import { guardTick, sampleHost } from "../src/host-guard.ts";
+import { guardTick, sampleHost, sampleLoadMemory } from "../src/host-guard.ts";
 import type { Runner } from "../src/run.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
@@ -61,6 +61,18 @@ test("on Linux the host guard reads free memory from /proc/meminfo when memory_p
 test("free memory is not rounded, so 27.6% does not pass as 28%", async () => {
   const s = await sampleHost(linuxHost("MemTotal:       10000000 kB\nMemAvailable:    2760000 kB\n"));
   expect(s.memFreePct).toBeCloseTo(27.6, 5);
+});
+
+test("heavy admission's probe ends on the memory read: no disk, swap or session probe after it", async () => {
+  const calls: string[] = [];
+  const host = linuxHost("MemTotal:       10000000 kB\nMemAvailable:    4000000 kB\n");
+  const s = await sampleLoadMemory(async (argv, opts) => {
+    calls.push(argv.join(" "));
+    return host(argv, opts);
+  });
+  expect(s).toEqual({ load1: 0.5, memFreePct: 40 });
+  expect(calls.at(-1)).toBe("cat /proc/meminfo");
+  expect(calls.some((c) => c.startsWith("df") || c.includes("swapusage"))).toBe(false);
 });
 
 test("the host guard keeps memory at 100% when neither memory_pressure nor /proc/meminfo works", async () => {

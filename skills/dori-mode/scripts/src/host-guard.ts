@@ -15,11 +15,8 @@ const num = (s: string | undefined, fallback: number): number => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-export const sampleHost = async (
-  run: Runner,
-  dataPath = "/",
-  rts: ChosenRuntimes = runtimesFor({}, process.env, run),
-): Promise<HostSample> => {
+/** Load, then free memory as the last read: what heavy admission decides on, with nothing slow after the memory read. */
+export const sampleLoadMemory = async (run: Runner): Promise<Pick<HostSample, "load1" | "memFreePct">> => {
   const load = await run(["sysctl", "-n", "vm.loadavg"]);
   const loadLinux = load.code === 0 ? null : await run(["cat", "/proc/loadavg"]);
   const load1 = num(
@@ -40,6 +37,15 @@ export const sampleHost = async (
       : total !== null && total > 0 && available !== null
         ? (available / total) * 100
         : 100;
+  return { load1, memFreePct };
+};
+
+export const sampleHost = async (
+  run: Runner,
+  dataPath = "/",
+  rts: ChosenRuntimes = runtimesFor({}, process.env, run),
+): Promise<HostSample> => {
+  const { load1, memFreePct } = await sampleLoadMemory(run);
   const df = await run(["df", "-k", dataPath]);
   const diskFreeGb = num(df.out.split("\n").at(-1)?.trim().split(/\s+/)[3], 0) / 1_048_576;
   const swap = await run(["sysctl", "-n", "vm.swapusage"]);

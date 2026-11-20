@@ -16,7 +16,7 @@ import {
   type SlotDeps,
   warmingCount,
 } from "./heavy-slot.ts";
-import { guardTick, sampleHost } from "./host-guard.ts";
+import { guardTick, sampleHost, sampleLoadMemory } from "./host-guard.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { Slack } from "./messenger/slack.ts";
 import { Reports } from "./reports.ts";
@@ -77,8 +77,7 @@ const heavy: Command = async ({ rest, config }) => {
     },
     clock: realClock,
     host: async (): Promise<HeavyHost> => {
-      const s = await sampleHost(run);
-      return { load1: s.load1, memFreePct: s.memFreePct, memTotalGb: totalmem() / 1024 ** 3 };
+      return { ...(await sampleLoadMemory(run)), memTotalGb: totalmem() / 1024 ** 3 };
     },
     alive: pidAlive,
     pid: process.pid,
