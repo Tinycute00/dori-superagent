@@ -120,10 +120,10 @@ export const warmingCount = (held: readonly HeldSlot[], now: number): number =>
 
 // Only under the admission lock, on a slot heldSlots did not list: either absent or left by a dead owner, so it is
 // cleared and claimed without probing its owner again.
-const claim = (deps: SlotDeps, slot: string, label: string): string => {
+const claim = (deps: SlotDeps, slot: string, label: string, stamp: string): string => {
   rmSync(slot, { recursive: true, force: true });
   mkdirSync(slot);
-  writeFileSync(join(slot, "owner"), `${deps.pid} ${label} ${new Date(deps.clock.now()).toISOString()}`);
+  writeFileSync(join(slot, "owner"), `${deps.pid} ${label} ${stamp}`);
   return slot;
 };
 
@@ -138,13 +138,15 @@ export const decideNow = async (
   held: readonly HeldSlot[],
 ): Promise<HeavyDecision> => {
   const elapsed = deps.elapsedMs ?? (() => performance.now());
+  // The wall clock (warm-up) is read before the sample: after the age check only arithmetic runs.
+  const warming = warmingCount(held, deps.clock.now());
   for (let tries = 1; ; tries++) {
     const started = elapsed();
     const host = await deps.host();
     const fresh = elapsed() - started <= SAMPLE_MAX_AGE_MS;
     if (fresh || tries === SAMPLE_TRIES) {
       const used = fresh ? host : { ...host, load1: Number.NaN, memFreePct: Number.NaN };
-      const d = heavyAdmission(deps.policy, used, held.length, warmingCount(held, deps.clock.now()));
+      const d = heavyAdmission(deps.policy, used, held.length, warming);
       return fresh
         ? d
         : { ...d, reason: `${d.reason}; host sample took over ${SAMPLE_MAX_AGE_MS} ms ${SAMPLE_TRIES} times` };
@@ -164,8 +166,9 @@ export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000
       const free = Array.from({ length: deps.policy.maxSlots }, (_, i) => join(deps.dir, `slot.${i + 1}`)).find(
         (s) => !taken.has(s),
       );
+      const stamp = new Date(deps.clock.now()).toISOString();
       const d = await decideNow(deps, held);
-      return { d, slot: d.admit && free !== undefined ? claim(deps, free, label) : null };
+      return { d, slot: d.admit && free !== undefined ? claim(deps, free, label, stamp) : null };
     });
     if (slot) {
       deps.log(`HEAVY_START ${label} ${d.reason}`);

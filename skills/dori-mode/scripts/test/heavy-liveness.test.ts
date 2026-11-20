@@ -136,3 +136,37 @@ test("a stale sample decides neither a start nor a wait: the fresh one after it 
   expect(falling).toMatchObject({ admit: true, limit: 4 });
   expect(falling.reason).toContain("load 2.0 < 10");
 });
+
+test("nothing reads a clock between the fresh sample and the claim, so no pause there can act on it", async () => {
+  const dir = join(state.dir, "heavy");
+  holder(dir, 1, process.pid);
+  const events: string[] = [];
+  const slot = await acquireSlot(
+    {
+      dir,
+      policy,
+      pid: 7,
+      alive: () => true,
+      log: () => {},
+      elapsedMs: () => {
+        events.push("elapsed");
+        return 0;
+      },
+      host: async () => {
+        events.push("host");
+        return { load1: 2, memFreePct: 80, memTotalGb: 30 };
+      },
+      clock: {
+        now: () => {
+          events.push("now");
+          return Date.now();
+        },
+        sleep: async () => {},
+      },
+    },
+    "after-sample",
+    1,
+  );
+  expect(slot).toBe(join(dir, "slot.2"));
+  expect(events.slice(events.lastIndexOf("host"))).toEqual(["host", "elapsed"]);
+});
