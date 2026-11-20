@@ -90,7 +90,7 @@ const heavy: Command = async ({ rest, config }) => {
     console.log(`HEAVY ${d.admit ? "OPEN" : "FULL"} ${d.reason}`);
     for (const h of held)
       console.log(
-        `HEAVY_SLOT ${h.slot} ${h.owner ? `${h.owner.label} pid ${h.owner.pid} since ${new Date(h.owner.since).toISOString()}` : "claiming"}`,
+        `HEAVY_SLOT ${h.slot} ${h.owner ? `${h.owner.label} pid ${h.owner.pid} since ${Number.isNaN(h.owner.since) ? "unknown" : new Date(h.owner.since).toISOString()}` : "claiming"}`,
       );
     return;
   }

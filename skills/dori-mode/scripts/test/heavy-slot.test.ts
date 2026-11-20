@@ -16,7 +16,7 @@ afterEach(() => state.done());
 test("free memory above the guard floor sets the limit: 15 GB free on 30 GB fits two more 4 GB jobs", () => {
   const d = heavyAdmission(policy, host(50), 1, 0);
   expect(d).toMatchObject({ limit: 3, admit: true });
-  expect(d.reason).toStartWith("limit 3 (memory), running 1:");
+  expect(d.reason).toStartWith("limit 3 of 1-4 (memory), running 1:");
 });
 
 test("the limit never passes the ceiling, however much memory is free", () => {
@@ -28,7 +28,7 @@ test("the floor always runs, even below the memory floor or over the load limit"
   expect(heavyAdmission(policy, host(10), 0, 0)).toMatchObject({ limit: 1, admit: true });
   const loaded = heavyAdmission(policy, host(80, 40), 0, 0);
   expect(loaded).toMatchObject({ limit: 1, admit: true });
-  expect(loaded.reason).toStartWith("limit 1 (floor 1)");
+  expect(loaded.reason).toStartWith("limit 1 of 1-4 (floor)");
 });
 
 test("high load stops admissions above the floor without lowering what already runs", () => {
@@ -55,7 +55,7 @@ test("a shrunk limit leaves every running slot in place while a new job waits", 
   const since = new Date(T0 - 2 * WARMUP_MS).toISOString();
   for (const n of [1, 2, 3]) {
     mkdirSync(join(dir, `slot.${n}`), { recursive: true });
-    writeFileSync(join(dir, `slot.${n}`, "owner"), `${100 + n} job${n} ${since}`);
+    writeFileSync(join(dir, `slot.${n}`, "owner"), `${100 + n} job${n} ${since}\n`);
   }
   const logs: string[] = [];
   let polls = 0;
@@ -70,5 +70,5 @@ test("a shrunk limit leaves every running slot in place while a new job waits", 
   await expect(acquireSlot({ ...deps, host: async () => host(12) }, "new", 1)).rejects.toThrow("stop");
   expect(heldSlots(deps).map((h) => h.owner?.label)).toEqual(["job1", "job2", "job3"]);
   expect(logs).toHaveLength(1);
-  expect(logs[0]).toStartWith("HEAVY_WAIT new limit 2 (memory), running 3:");
+  expect(logs[0]).toStartWith("HEAVY_WAIT new limit 2 of 1-4 (memory), running 3:");
 });

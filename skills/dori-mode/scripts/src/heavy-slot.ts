@@ -28,16 +28,9 @@ export const heavyAdmission = (p: HeavyPolicy, host: HeavyHost, running: number,
   const loadOk = host.load1 < p.maxLoad;
   const wanted = loadOk ? running + fits : Math.min(running, running + fits);
   const limit = Math.max(p.minSlots, Math.min(p.maxSlots, wanted));
-  const bound =
-    wanted >= p.maxSlots
-      ? `ceiling ${p.maxSlots}`
-      : wanted < p.minSlots
-        ? `floor ${p.minSlots}`
-        : !loadOk
-          ? "load"
-          : "memory";
+  const bound = wanted >= p.maxSlots ? "ceiling" : wanted < p.minSlots ? "floor" : !loadOk ? "load" : "memory";
   const reason =
-    `limit ${limit} (${bound}), running ${running}${warming ? ` (${warming} starting)` : ""}: ` +
+    `limit ${limit} of ${p.minSlots}-${p.maxSlots} (${bound}), running ${running}${warming ? ` (${warming} starting)` : ""}: ` +
     `memory ${host.memFreePct}% free (${freeGb.toFixed(1)} of ${host.memTotalGb.toFixed(0)} GB), ` +
     `${p.jobMemGb} GB per job above ${p.memFreeMinPct}% fits ${fits >= 0 ? `${fits} more` : `${-fits} fewer`}; ` +
     `load ${host.load1.toFixed(1)} ${loadOk ? "<" : ">="} ${p.maxLoad}`;
@@ -67,7 +60,7 @@ const readOwner = (slot: string): Owner | null => {
   } catch {
     return null;
   }
-  const [pid = "", label = "", since = ""] = owner.split(" ");
+  const [pid = "", label = "", since = ""] = owner.trim().split(/\s+/);
   return { pid: Number(pid), label, since: Date.parse(since) };
 };
 
