@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   acquireSlot,
   type HeavyPolicy,
   heavyAdmission,
   heldSlots,
+  underLock,
   WARMUP_MS,
   warmingCount,
 } from "../src/heavy-slot.ts";
@@ -94,6 +95,17 @@ test("a shrunk limit leaves every running slot in place while a new job waits", 
   expect(logs[0]).toStartWith("HEAVY_WAIT new limit 2 of 1-4 (memory), running 3:");
 });
 
+test("a job that leaves exactly the floor is admitted (the gate's 16780160 kB / 6711328 kB sample)", () => {
+  const total = 16780160 / 1024 ** 2;
+  const d = heavyAdmission(
+    { ...policy, minSlots: 0 },
+    { load1: 2, memFreePct: (6711328 / 16780160) * 100, memTotalGb: total },
+    1,
+    0,
+  );
+  expect(d).toMatchObject({ limit: 2, admit: true });
+});
+
 test("a job that leaves memory just under the floor is held: 27.6% of 31 GB minus 4 GB is 14.7%", () => {
   const p = { ...policy, minSlots: 0 };
   expect(heavyAdmission(p, { load1: 2, memFreePct: 27.6, memTotalGb: 31 }, 1, 0)).toMatchObject({
@@ -116,21 +128,40 @@ test("a label with spaces keeps its start time, so an old job no longer counts a
   expect(warmingCount(held, T0)).toBe(0);
 });
 
-test("a lock left behind by a crashed process goes stale and no longer blocks admission", async () => {
+test("the admission lock excludes a second holder until the first section ends", async () => {
   const dir = join(state.dir, "heavy");
-  mkdirSync(join(dir, ".lock"), { recursive: true });
-  const old = new Date(Date.now() - 60_000);
-  utimesSync(join(dir, ".lock"), old, old);
-  const deps = {
-    dir,
-    policy,
-    clock: fakeClock(Date.now()),
-    pid: 7,
-    alive: () => true,
-    log: () => {},
-    host: async () => host(50),
-  };
-  const slot = await acquireSlot(deps, "after-crash", 1);
-  expect(slot).toBe(join(dir, "slot.1"));
-  expect(existsSync(join(dir, ".lock"))).toBe(false);
+  mkdirSync(dir, { recursive: true });
+  let innerRan = false;
+  let inner: Promise<void> = Promise.resolve();
+  await underLock(dir, () => {
+    inner = underLock(dir, () => {
+      innerRan = true;
+    });
+    expect(innerRan).toBe(false);
+  });
+  await inner;
+  expect(innerRan).toBe(true);
+});
+
+test("a lock holder that is killed releases the lock, with no age or pid guess", async () => {
+  const dir = join(state.dir, "heavy");
+  mkdirSync(dir, { recursive: true });
+  const holder = Bun.spawn(
+    [
+      "bun",
+      "-e",
+      `const { underLock } = await import(${JSON.stringify(join(import.meta.dir, "../src/heavy-slot.ts"))}); await underLock(${JSON.stringify(dir)}, () => { console.log("LOCKED"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); });`,
+    ],
+    { stdout: "pipe" },
+  );
+  const reader = holder.stdout.getReader();
+  let seen = "";
+  while (!seen.includes("LOCKED")) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`holder exited before locking: ${seen}`);
+    seen += new TextDecoder().decode(value);
+  }
+  holder.kill(9);
+  await holder.exited;
+  expect(await underLock(dir, () => "free")).toBe("free");
 });

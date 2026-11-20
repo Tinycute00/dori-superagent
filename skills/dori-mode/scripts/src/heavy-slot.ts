@@ -1,4 +1,5 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dlopen, FFIType } from "bun:ffi";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Clock } from "./run.ts";
@@ -24,7 +25,8 @@ export type HeavyDecision = { readonly limit: number; readonly admit: boolean; r
 export const heavyAdmission = (p: HeavyPolicy, host: HeavyHost, running: number, warming: number): HeavyDecision => {
   const freeGb = (host.memFreePct / 100) * host.memTotalGb;
   const spareGb = freeGb - (p.memFreeMinPct / 100) * host.memTotalGb - warming * p.jobMemGb;
-  const fits = Math.floor(spareGb / p.jobMemGb);
+  // The tolerance keeps a job that leaves exactly the floor (an exact 1.0 computed as 0.9999...) admitted.
+  const fits = Math.floor(spareGb / p.jobMemGb + 1e-9);
   const loadOk = host.load1 < p.maxLoad;
   const wanted = loadOk ? running + fits : Math.min(running, running + fits);
   const limit = Math.max(p.minSlots, Math.min(p.maxSlots, wanted));
@@ -111,32 +113,28 @@ const tryTake = (deps: SlotDeps, n: number, label: string): string | null => {
   return claim();
 };
 
-const LOCK_STALE_MS = 30_000;
 const LOCK_POLL_MS = 50;
+const LOCK_EX = 2,
+  LOCK_NB = 4,
+  LOCK_UN = 8;
+const libc = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
+  flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+});
 
-// Counting, deciding and claiming (a takeover included) run under one lock, so no two waiters decide on the same
-// count or take the same orphaned slot. The section never awaits; a lock left by a crashed process goes stale.
-const underLock = async <T>(deps: SlotDeps, section: () => T): Promise<T> => {
-  const lock = join(deps.dir, ".lock");
-  for (;;) {
-    try {
-      mkdirSync(lock);
-      break;
-    } catch {
-      let age = 0;
-      try {
-        age = Date.now() - statSync(lock).mtimeMs;
-      } catch {
-        continue;
-      }
-      if (age > LOCK_STALE_MS) rmSync(lock, { recursive: true, force: true });
-      else await Bun.sleep(LOCK_POLL_MS);
-    }
-  }
+// Counting, deciding and claiming (a takeover included) run under one flock(2) on <dir>/.lock, so no two waiters
+// decide on the same count or take the same orphaned slot. The kernel drops the lock only when its holder exits, so a
+// paused holder keeps it and a dead one never leaves it behind; no age or pid guess is involved.
+export const underLock = async <T>(dir: string, section: () => T): Promise<T> => {
+  const fd = openSync(join(dir, ".lock"), "a");
   try {
-    return section();
+    while (libc.symbols.flock(fd, LOCK_EX | LOCK_NB) !== 0) await Bun.sleep(LOCK_POLL_MS);
+    try {
+      return section();
+    } finally {
+      libc.symbols.flock(fd, LOCK_UN);
+    }
   } finally {
-    rmSync(lock, { recursive: true, force: true });
+    closeSync(fd);
   }
 };
 
@@ -145,7 +143,7 @@ export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000
   let last = "";
   for (;;) {
     const host = await deps.host();
-    const { d, slot } = await underLock(deps, () => {
+    const { d, slot } = await underLock(deps.dir, () => {
       const held = heldSlots(deps);
       const d = heavyAdmission(deps.policy, host, held.length, warmingCount(held, deps.clock.now()));
       if (!d.admit) return { d, slot: null };
