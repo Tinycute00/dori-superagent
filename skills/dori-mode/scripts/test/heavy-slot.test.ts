@@ -197,3 +197,32 @@ test("when flock cannot be loaded the admission section never runs and nothing i
   expect(readdirSync(dir)).toEqual([]);
   expect(existsSync(join(dir, ".lock"))).toBe(false);
 });
+
+test("a waiter held behind the lock decides on memory sampled after the wait, not before it", async () => {
+  const dir = join(state.dir, "heavy");
+  mkdirSync(join(dir, "slot.1"), { recursive: true });
+  writeFileSync(join(dir, "slot.1", "owner"), `101 running ${new Date(Date.now() - 2 * WARMUP_MS).toISOString()}`);
+  let free = 80;
+  const clock = {
+    ...fakeClock(Date.now()),
+    sleep: async () => {
+      throw new Error("waits");
+    },
+  };
+  const deps = {
+    dir,
+    policy,
+    clock,
+    pid: 7,
+    alive: () => true,
+    log: () => {},
+    host: async () => host(free),
+  };
+  let waiter: Promise<string> = Promise.resolve("");
+  await underLock(dir, () => {
+    waiter = acquireSlot(deps, "behind-the-lock", 1);
+    free = 10;
+  });
+  await expect(waiter).rejects.toThrow("waits");
+  expect(heldSlots(deps)).toHaveLength(1);
+});

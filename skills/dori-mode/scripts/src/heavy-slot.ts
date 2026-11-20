@@ -142,16 +142,21 @@ export const loadFlock = (platform: string = process.platform, path = LIBC[platf
 let systemFlock: Flock | undefined;
 const defaultFlock = (): Flock => (systemFlock ??= loadFlock());
 
-// Counting, deciding and claiming (a takeover included) run under one flock(2) on <dir>/.lock, so no two waiters
-// decide on the same count or take the same orphaned slot. The kernel drops the lock only when its holder exits, so a
-// paused holder keeps it and a dead one never leaves it behind; no age or pid guess is involved.
-export const underLock = async <T>(dir: string, section: () => T, load: () => Flock = defaultFlock): Promise<T> => {
+// Sampling the host, counting, deciding and claiming (a takeover included) run under one flock(2) on <dir>/.lock, so
+// no two waiters decide on the same count, take the same orphaned slot, or decide on memory sampled before a long wait
+// for the lock. The kernel drops the lock only when its holder exits, so a paused holder keeps it and a dead one never
+// leaves it behind; no age or pid guess is involved.
+export const underLock = async <T>(
+  dir: string,
+  section: () => T | Promise<T>,
+  load: () => Flock = defaultFlock,
+): Promise<T> => {
   const flock = load();
   const fd = openSync(join(dir, ".lock"), "a");
   try {
     while (flock(fd, LOCK_EX | LOCK_NB) !== 0) await Bun.sleep(LOCK_POLL_MS);
     try {
-      return section();
+      return await section();
     } finally {
       flock(fd, LOCK_UN);
     }
@@ -164,8 +169,8 @@ export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000
   mkdirSync(deps.dir, { recursive: true });
   let last = "";
   for (;;) {
-    const host = await deps.host();
-    const { d, slot } = await underLock(deps.dir, () => {
+    const { d, slot } = await underLock(deps.dir, async () => {
+      const host = await deps.host();
       const held = heldSlots(deps);
       const d = heavyAdmission(deps.policy, host, held.length, warmingCount(held, deps.clock.now()));
       if (!d.admit) return { d, slot: null };
