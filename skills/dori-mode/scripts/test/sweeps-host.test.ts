@@ -63,11 +63,20 @@ test("the host guard keeps memory at 100% when neither memory_pressure nor /proc
   expect((await sampleHost(linuxHost("MemTotal:       16000000 kB\n"))).memFreePct).toBe(100);
 });
 
-test("a heavy slot waits for load to drop, and a slot held by a dead process is taken over", async () => {
+const onePolicy = (minSlots: number) => ({ minSlots, maxSlots: 1, maxLoad: 80, jobMemGb: 4, memFreeMinPct: 15 });
+
+test("a heavy slot above the floor waits for load to drop, and a slot held by a dead process is taken over", async () => {
   const dir = join(state.dir, "heavy");
   const clock = fakeClock(T0);
   let loads = [120, 95, 40];
-  const base = { dir, slots: 1, maxLoad: 80, clock, pid: 4242, load: async () => loads.shift() ?? 40 };
+  const base = {
+    dir,
+    policy: onePolicy(0),
+    clock,
+    pid: 4242,
+    log: () => {},
+    host: async () => ({ load1: loads.shift() ?? 40, memFreePct: 80, memTotalGb: 32 }),
+  };
   const slot = await acquireSlot({ ...base, alive: () => true }, "build");
   expect(loads).toEqual([]);
   mkdirSync(dir, { recursive: true });
@@ -106,7 +115,19 @@ test("a slot whose owner is alive is not taken", async () => {
     },
   };
   await expect(
-    acquireSlot({ dir, slots: 1, maxLoad: 80, clock, pid: 7, load: async () => 10, alive: () => true }, "x", 1),
+    acquireSlot(
+      {
+        dir,
+        policy: onePolicy(1),
+        clock,
+        pid: 7,
+        log: () => {},
+        host: async () => ({ load1: 10, memFreePct: 80, memTotalGb: 32 }),
+        alive: () => true,
+      },
+      "x",
+      1,
+    ),
   ).rejects.toThrow("stop");
 });
 
