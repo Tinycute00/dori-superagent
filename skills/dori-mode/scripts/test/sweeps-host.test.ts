@@ -80,6 +80,14 @@ test("an unreadable memory value is flagged unknown for admission while the guar
   expect(s).toMatchObject({ memFreePct: 100, memKnown: false, loadKnown: true });
 });
 
+test("an empty load output is unknown, not a load of 0", async () => {
+  const base = linuxHost("MemTotal:       10000000 kB\nMemAvailable:    4000000 kB\n");
+  const s = await sampleLoadMemory(async (argv, opts) =>
+    argv[0] === "cat" && argv[1] === "/proc/loadavg" ? { code: 0, out: "", err: "" } : base(argv, opts),
+  );
+  expect(s).toMatchObject({ loadKnown: false, memKnown: true });
+});
+
 test("the host guard keeps memory at 100% when neither memory_pressure nor /proc/meminfo works", async () => {
   expect((await sampleHost(linuxHost(null))).memFreePct).toBe(100);
   expect((await sampleHost(linuxHost("MemTotal:       16000000 kB\n"))).memFreePct).toBe(100);

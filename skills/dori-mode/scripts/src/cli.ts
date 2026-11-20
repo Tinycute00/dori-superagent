@@ -8,7 +8,7 @@ import { messengerCommands, messengerErrors } from "./cli-messenger.ts";
 import { opsCommands } from "./cli-ops.ts";
 import { ConfigError, loadConfig } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { HeavyLockError } from "./heavy-slot.ts";
+import { HeavyAdmissionError } from "./heavy-slot.ts";
 import { LaunchError } from "./launch.ts";
 import { Registry } from "./registry.ts";
 import { realClock, run } from "./run.ts";
@@ -117,7 +117,7 @@ try {
 } catch (e) {
   if (
     e instanceof LaunchError ||
-    e instanceof HeavyLockError ||
+    e instanceof HeavyAdmissionError ||
     [...messengerErrors, ...journalErrors].some((type) => e instanceof type)
   )
     die((e as Error).message);

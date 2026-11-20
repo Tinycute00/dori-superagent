@@ -25,9 +25,10 @@ export type LoadMemory = Pick<HostSample, "load1" | "memFreePct"> & {
 export const sampleLoadMemory = async (run: Runner): Promise<LoadMemory> => {
   const load = await run(["sysctl", "-n", "vm.loadavg"]);
   const loadLinux = load.code === 0 ? null : await run(["cat", "/proc/loadavg"]);
-  const loadRead = Number(
-    (load.code === 0 ? load.out.replace(/[{}]/g, "").trim() : (loadLinux?.out ?? "")).split(/\s+/)[0],
-  );
+  const loadText =
+    (load.code === 0 ? load.out.replace(/[{}]/g, "").trim() : (loadLinux?.out ?? "")).split(/\s+/)[0] ?? "";
+  // Only digits are a reading: an empty or garbled output is unknown, not a load of 0.
+  const loadRead = /^\d+(\.\d+)?$/.test(loadText) ? Number(loadText) : Number.NaN;
   const loadKnown = (load.code === 0 || loadLinux?.code === 0) && Number.isFinite(loadRead);
   const load1 = loadKnown ? loadRead : 0;
   const mp = await run(["memory_pressure", "-Q"]);

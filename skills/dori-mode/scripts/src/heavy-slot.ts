@@ -62,41 +62,55 @@ export const WARMUP_MS = 120_000;
 
 type Owner = { readonly pid: number; readonly label: string; readonly since: number };
 
-const readOwner = (slot: string): Owner | null => {
+const isMissing = (e: unknown): boolean => (e as { code?: string } | null)?.code === "ENOENT";
+
+// null = no owner file (yet); "unreadable" = it is there but cannot be read, so its holder is unknown.
+const readOwner = (slot: string): Owner | null | "unreadable" => {
   let owner = "";
   try {
     owner = readFileSync(join(slot, "owner"), "utf8");
-  } catch {
-    return null;
+  } catch (e) {
+    return isMissing(e) ? null : "unreadable";
   }
   const words = owner.trim().split(/\s+/);
   return { pid: Number(words[0]), label: words.slice(1, -1).join(" "), since: Date.parse(words.at(-1) ?? "") };
 };
 
+// True only when the slot is confirmed free: its owner is dead, or it has no owner file and is older than ORPHAN_MS, or
+// it is gone. Anything that cannot be confirmed keeps the slot held.
 const orphaned = (deps: Pick<SlotDeps, "alive" | "clock">, slot: string): boolean => {
   const owner = readOwner(slot);
+  if (owner === "unreadable") return false;
   if (owner) return !deps.alive(owner.pid);
   try {
     return deps.clock.now() - statSync(slot).mtimeMs > ORPHAN_MS;
-  } catch {
-    return true;
+  } catch (e) {
+    return isMissing(e);
   }
 };
 
 export type HeldSlot = { readonly slot: string; readonly owner: Owner | null };
 
+const ownerOf = (slot: string): Owner | null => {
+  const owner = readOwner(slot);
+  return owner === "unreadable" ? null : owner;
+};
+
 export const heldSlots = (deps: Pick<SlotDeps, "dir" | "alive" | "clock">): HeldSlot[] => {
   let names: string[] = [];
   try {
     names = readdirSync(deps.dir).filter((n) => /^slot\.\d+$/.test(n));
-  } catch {
-    return [];
+  } catch (e) {
+    if (isMissing(e)) return [];
+    throw new HeavyAdmissionError(
+      `cannot list heavy slots in ${deps.dir}: ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
   return names
     .sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)))
     .map((n) => join(deps.dir, n))
     .filter((slot) => !orphaned(deps, slot))
-    .map((slot) => ({ slot, owner: readOwner(slot) }));
+    .map((slot) => ({ slot, owner: ownerOf(slot) }));
 };
 
 export const warmingCount = (held: readonly HeldSlot[], now: number): number =>
@@ -122,18 +136,18 @@ const LIBC: Readonly<Record<string, string>> = { linux: "libc.so.6", darwin: "/u
 
 export type Flock = (fd: number, operation: number) => number;
 
-export class HeavyLockError extends Error {}
+export class HeavyAdmissionError extends Error {}
 
 // No lock means no heavy admission: a platform or libc without flock(2) stops `dori heavy` with this error instead of
 // admitting jobs unguarded.
 export const loadFlock = (platform: string = process.platform, path = LIBC[platform]): Flock => {
   if (path === undefined)
-    throw new HeavyLockError(`dori heavy needs flock(2); it supports linux (glibc) and macOS, not ${platform}`);
+    throw new HeavyAdmissionError(`dori heavy needs flock(2); it supports linux (glibc) and macOS, not ${platform}`);
   try {
     const lib = dlopen(path, { flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } });
     return (fd, operation) => lib.symbols.flock(fd, operation);
   } catch (e) {
-    throw new HeavyLockError(
+    throw new HeavyAdmissionError(
       `dori heavy needs flock(2) from ${path} on ${platform} and could not load it: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
@@ -177,19 +191,21 @@ export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000
       const free = Array.from({ length: deps.policy.maxSlots }, (_, i) => join(deps.dir, `slot.${i + 1}`)).find(
         (s) => !taken.has(s),
       );
-      // A sample older than SAMPLE_MAX_AGE_MS at the claim (whatever slowed it) is taken again and decided again; after
-      // SAMPLE_TRIES stale samples the job waits for the next poll instead of claiming on an old figure.
+      // The age runs from before the first reading (load) to the claim, so a slow probe inside host() counts too. A
+      // sample older than SAMPLE_MAX_AGE_MS is taken again; after SAMPLE_TRIES stale samples the readings count as
+      // unknown, which admits the floor only.
       for (let tries = 1; ; tries++) {
+        const startedAt = deps.clock.now();
         const host = await deps.host();
-        const sampledAt = deps.clock.now();
-        const d = heavyAdmission(deps.policy, host, held.length, warmingCount(held, sampledAt));
+        const fresh = (): boolean => deps.clock.now() - startedAt <= SAMPLE_MAX_AGE_MS;
+        const stale = tries === SAMPLE_TRIES && !fresh();
+        const used = stale ? { ...host, load1: Number.NaN, memFreePct: Number.NaN } : host;
+        const d0 = heavyAdmission(deps.policy, used, held.length, warmingCount(held, startedAt));
+        const d = stale
+          ? { ...d0, reason: `${d0.reason}; host sample took over ${SAMPLE_MAX_AGE_MS} ms ${SAMPLE_TRIES} times` }
+          : d0;
         if (!d.admit || free === undefined) return { d, slot: null };
-        if (deps.clock.now() - sampledAt <= SAMPLE_MAX_AGE_MS) return { d, slot: claim(deps, free, label) };
-        if (tries === SAMPLE_TRIES)
-          return {
-            d: { ...d, admit: false, reason: `${d.reason}; host sample went stale before the claim` },
-            slot: null,
-          };
+        if (stale || fresh()) return { d, slot: claim(deps, free, label) };
       }
     });
     if (slot) {
@@ -204,15 +220,22 @@ export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000
 
 export const releaseSlot = (slot: string): void => rmSync(slot, { recursive: true, force: true });
 
+// False only for a confirmed death (no such process, or a zombie). A process of another user (EPERM), or a ps that
+// fails or prints nothing, keeps the slot held: an unknown holder is counted, never reclaimed.
 export const pidAlive = (pid: number): boolean => {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
-  } catch {
-    return false;
+  } catch (e) {
+    return (e as { code?: string } | null)?.code !== "ESRCH";
   }
-  const stat = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)])
-    .stdout.toString()
-    .trim();
-  return stat !== "" && !stat.startsWith("Z");
+  let stat = "";
+  try {
+    stat = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)])
+      .stdout.toString()
+      .trim();
+  } catch {
+    return true;
+  }
+  return !stat.startsWith("Z");
 };

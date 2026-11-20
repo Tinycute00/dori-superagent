@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   acquireSlot,
   type HeavyPolicy,
-  HeavyLockError,
+  HeavyAdmissionError,
   heldSlots,
   loadFlock,
   underLock,
@@ -75,12 +75,12 @@ test("a lock holder that is killed releases the lock, with no age or pid guess",
 });
 
 test("a platform without a known libc is refused by name, never run without the lock", () => {
-  expect(() => loadFlock("plan9")).toThrow(HeavyLockError);
+  expect(() => loadFlock("plan9")).toThrow(HeavyAdmissionError);
   expect(() => loadFlock("plan9")).toThrow("supports linux (glibc) and macOS, not plan9");
 });
 
 test("a libc that cannot be loaded is refused with its path, never run without the lock", () => {
-  expect(() => loadFlock("linux", "/nonexistent/libc.so.6")).toThrow(HeavyLockError);
+  expect(() => loadFlock("linux", "/nonexistent/libc.so.6")).toThrow(HeavyAdmissionError);
   expect(() => loadFlock("linux", "/nonexistent/libc.so.6")).toThrow(
     "dori heavy needs flock(2) from /nonexistent/libc.so.6 on linux and could not load it",
   );
@@ -98,7 +98,7 @@ test("when flock cannot be loaded the admission section never runs and nothing i
       },
       () => loadFlock("linux", "/nonexistent/libc.so.6"),
     ),
-  ).rejects.toThrow(HeavyLockError);
+  ).rejects.toThrow(HeavyAdmissionError);
   expect(ran).toBe(false);
   expect(readdirSync(dir)).toEqual([]);
   expect(existsSync(join(dir, ".lock"))).toBe(false);
@@ -226,5 +226,6 @@ test("a sample that keeps going stale makes the job wait instead of claiming on 
   await expect(acquireSlot(deps, "always-stale", 1)).rejects.toThrow("waits");
   expect(sampled).toBe(3);
   expect(heldSlots(deps)).toHaveLength(1);
-  expect(logs[0]).toEndWith("host sample went stale before the claim");
+  expect(logs[0]).toContain("memory unknown");
+  expect(logs[0]).toEndWith("host sample took over 1000 ms 3 times");
 });
