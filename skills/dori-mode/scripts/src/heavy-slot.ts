@@ -95,22 +95,13 @@ export const heldSlots = (deps: Pick<SlotDeps, "dir" | "alive" | "clock">): Held
 export const warmingCount = (held: readonly HeldSlot[], now: number): number =>
   held.filter((h) => !h.owner || now - h.owner.since < WARMUP_MS).length;
 
-const tryTake = (deps: SlotDeps, n: number, label: string): string | null => {
-  const slot = join(deps.dir, `slot.${n}`);
-  const claim = (): string | null => {
-    try {
-      mkdirSync(slot);
-    } catch {
-      return null;
-    }
-    writeFileSync(join(slot, "owner"), `${deps.pid} ${label} ${new Date(deps.clock.now()).toISOString()}`);
-    return slot;
-  };
-  const got = claim();
-  if (got) return got;
-  if (!orphaned(deps, slot)) return null;
+// Only under the admission lock, on a slot heldSlots did not list: either absent or left by a dead owner, so it is
+// cleared and claimed without probing its owner again.
+const claim = (deps: SlotDeps, slot: string, label: string): string => {
   rmSync(slot, { recursive: true, force: true });
-  return claim();
+  mkdirSync(slot);
+  writeFileSync(join(slot, "owner"), `${deps.pid} ${label} ${new Date(deps.clock.now()).toISOString()}`);
+  return slot;
 };
 
 const LOCK_POLL_MS = 50;
@@ -170,15 +161,16 @@ export const acquireSlot = async (deps: SlotDeps, label: string, pollMs = 15_000
   let last = "";
   for (;;) {
     const { d, slot } = await underLock(deps.dir, async () => {
-      const host = await deps.host();
+      // Every owner probe (ps) runs before the host sample, so the memory reading is the last outside read before the
+      // decision and the claim.
       const held = heldSlots(deps);
+      const taken = new Set(held.map((h) => h.slot));
+      const free = Array.from({ length: deps.policy.maxSlots }, (_, i) => join(deps.dir, `slot.${i + 1}`)).find(
+        (s) => !taken.has(s),
+      );
+      const host = await deps.host();
       const d = heavyAdmission(deps.policy, host, held.length, warmingCount(held, deps.clock.now()));
-      if (!d.admit) return { d, slot: null };
-      for (let n = 1; n <= deps.policy.maxSlots; n++) {
-        const slot = tryTake(deps, n, label);
-        if (slot) return { d, slot };
-      }
-      return { d, slot: null };
+      return { d, slot: d.admit && free !== undefined ? claim(deps, free, label) : null };
     });
     if (slot) {
       deps.log(`HEAVY_START ${label} ${d.reason}`);

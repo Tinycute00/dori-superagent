@@ -226,3 +226,38 @@ test("a waiter held behind the lock decides on memory sampled after the wait, no
   await expect(waiter).rejects.toThrow("waits");
   expect(heldSlots(deps)).toHaveLength(1);
 });
+
+test("every owner probe runs before the host sample, and a dead owner's slot is still taken", async () => {
+  const dir = join(state.dir, "heavy");
+  const since = new Date(Date.now() - 2 * WARMUP_MS).toISOString();
+  for (const [n, pid] of [
+    [1, 101],
+    [2, 202],
+  ] as const) {
+    mkdirSync(join(dir, `slot.${n}`), { recursive: true });
+    writeFileSync(join(dir, `slot.${n}`, "owner"), `${pid} job${n} ${since}`);
+  }
+  const events: string[] = [];
+  const slot = await acquireSlot(
+    {
+      dir,
+      policy,
+      clock: fakeClock(Date.now()),
+      pid: 7,
+      log: () => {},
+      alive: (pid) => {
+        events.push("alive");
+        return pid === 101;
+      },
+      host: async () => {
+        events.push("host");
+        return host(80);
+      },
+    },
+    "after-probes",
+    1,
+  );
+  expect(events.at(-1)).toBe("host");
+  expect(events.filter((e) => e === "host")).toHaveLength(1);
+  expect(slot).toBe(join(dir, "slot.2"));
+});
