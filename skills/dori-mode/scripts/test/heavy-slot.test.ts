@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   acquireSlot,
   type HeavyPolicy,
   heavyAdmission,
+  HeavyLockError,
   heldSlots,
+  loadFlock,
   underLock,
   WARMUP_MS,
   warmingCount,
@@ -164,4 +166,34 @@ test("a lock holder that is killed releases the lock, with no age or pid guess",
   holder.kill(9);
   await holder.exited;
   expect(await underLock(dir, () => "free")).toBe("free");
+});
+
+test("a platform without a known libc is refused by name, never run without the lock", () => {
+  expect(() => loadFlock("plan9")).toThrow(HeavyLockError);
+  expect(() => loadFlock("plan9")).toThrow("supports linux (glibc) and macOS, not plan9");
+});
+
+test("a libc that cannot be loaded is refused with its path, never run without the lock", () => {
+  expect(() => loadFlock("linux", "/nonexistent/libc.so.6")).toThrow(HeavyLockError);
+  expect(() => loadFlock("linux", "/nonexistent/libc.so.6")).toThrow(
+    "dori heavy needs flock(2) from /nonexistent/libc.so.6 on linux and could not load it",
+  );
+});
+
+test("when flock cannot be loaded the admission section never runs and nothing is claimed", async () => {
+  const dir = join(state.dir, "heavy");
+  mkdirSync(dir, { recursive: true });
+  let ran = false;
+  await expect(
+    underLock(
+      dir,
+      () => {
+        ran = true;
+      },
+      () => loadFlock("linux", "/nonexistent/libc.so.6"),
+    ),
+  ).rejects.toThrow(HeavyLockError);
+  expect(ran).toBe(false);
+  expect(readdirSync(dir)).toEqual([]);
+  expect(existsSync(join(dir, ".lock"))).toBe(false);
 });
