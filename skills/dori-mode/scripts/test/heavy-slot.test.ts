@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   acquireSlot,
@@ -114,4 +114,23 @@ test("a label with spaces keeps its start time, so an old job no longer counts a
   const held = heldSlots({ dir, alive: () => true, clock: fakeClock(T0) });
   expect(held[0]?.owner).toEqual({ pid: 42, label: "browser suite", since: T0 - 10 * 60_000 });
   expect(warmingCount(held, T0)).toBe(0);
+});
+
+test("a lock left behind by a crashed process goes stale and no longer blocks admission", async () => {
+  const dir = join(state.dir, "heavy");
+  mkdirSync(join(dir, ".lock"), { recursive: true });
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(join(dir, ".lock"), old, old);
+  const deps = {
+    dir,
+    policy,
+    clock: fakeClock(Date.now()),
+    pid: 7,
+    alive: () => true,
+    log: () => {},
+    host: async () => host(50),
+  };
+  const slot = await acquireSlot(deps, "after-crash", 1);
+  expect(slot).toBe(join(dir, "slot.1"));
+  expect(existsSync(join(dir, ".lock"))).toBe(false);
 });

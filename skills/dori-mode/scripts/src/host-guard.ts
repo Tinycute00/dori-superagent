@@ -55,7 +55,7 @@ export const sampleHost = async (
 export const alertReasons = (s: HostSample, t: GuardThresholds): string[] => {
   const r: string[] = [];
   if (s.load1 > t.loadAlert) r.push(`load ${s.load1.toFixed(0)} > ${t.loadAlert}`);
-  if (s.memFreePct < t.memFreeMinPct) r.push(`memory free ${Math.round(s.memFreePct)}% < ${t.memFreeMinPct}%`);
+  if (s.memFreePct < t.memFreeMinPct) r.push(`memory free ${+s.memFreePct.toFixed(1)}% < ${t.memFreeMinPct}%`);
   if (s.diskFreeGb < t.diskFreeMinGb) r.push(`disk free ${s.diskFreeGb.toFixed(0)} GB < ${t.diskFreeMinGb} GB`);
   if (t.panesMax > 0 && s.panes < 0) r.push("session count unknown");
   if (t.panesMax > 0 && s.panes > t.panesMax) r.push(`panes ${s.panes} > ${t.panesMax}`);
@@ -72,7 +72,7 @@ export const guardTick = (s: HostSample, t: GuardThresholds, state: GuardState):
     out.push(
       alerting
         ? `HOST_GUARD ALERT ${reasons.join(" | ")}`
-        : `HOST_GUARD CLEAR load ${s.load1.toFixed(0)}, memory free ${Math.round(s.memFreePct)}%, disk free ${s.diskFreeGb.toFixed(0)} GB, swap free ${s.swapFreeGb.toFixed(1)} GB`,
+        : `HOST_GUARD CLEAR load ${s.load1.toFixed(0)}, memory free ${+s.memFreePct.toFixed(1)}%, disk free ${s.diskFreeGb.toFixed(0)} GB, swap free ${s.swapFreeGb.toFixed(1)} GB`,
     );
     state.alerting = alerting;
   }
