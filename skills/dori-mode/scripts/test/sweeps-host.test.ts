@@ -58,6 +58,11 @@ test("on Linux the host guard reads free memory from /proc/meminfo when memory_p
   expect(s.memFreePct).toBe(25);
 });
 
+test("free memory is not rounded, so 27.6% does not pass as 28%", async () => {
+  const s = await sampleHost(linuxHost("MemTotal:       10000000 kB\nMemAvailable:    2760000 kB\n"));
+  expect(s.memFreePct).toBeCloseTo(27.6, 5);
+});
+
 test("the host guard keeps memory at 100% when neither memory_pressure nor /proc/meminfo works", async () => {
   expect((await sampleHost(linuxHost(null))).memFreePct).toBe(100);
   expect((await sampleHost(linuxHost("MemTotal:       16000000 kB\n"))).memFreePct).toBe(100);

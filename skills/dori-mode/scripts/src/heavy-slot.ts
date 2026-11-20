@@ -31,7 +31,7 @@ export const heavyAdmission = (p: HeavyPolicy, host: HeavyHost, running: number,
   const bound = wanted >= p.maxSlots ? "ceiling" : wanted < p.minSlots ? "floor" : !loadOk ? "load" : "memory";
   const reason =
     `limit ${limit} of ${p.minSlots}-${p.maxSlots} (${bound}), running ${running}${warming ? ` (${warming} starting)` : ""}: ` +
-    `memory ${host.memFreePct}% free (${freeGb.toFixed(1)} of ${host.memTotalGb.toFixed(0)} GB), ` +
+    `memory ${host.memFreePct.toFixed(0)}% free (${freeGb.toFixed(1)} of ${host.memTotalGb.toFixed(0)} GB), ` +
     `${p.jobMemGb} GB per job above ${p.memFreeMinPct}% fits ${fits >= 0 ? `${fits} more` : `${-fits} fewer`}; ` +
     `load ${host.load1.toFixed(1)} ${loadOk ? "<" : ">="} ${p.maxLoad}`;
   return { limit, admit: running < limit, reason };
@@ -60,8 +60,8 @@ const readOwner = (slot: string): Owner | null => {
   } catch {
     return null;
   }
-  const [pid = "", label = "", since = ""] = owner.trim().split(/\s+/);
-  return { pid: Number(pid), label, since: Date.parse(since) };
+  const words = owner.trim().split(/\s+/);
+  return { pid: Number(words[0]), label: words.slice(1, -1).join(" "), since: Date.parse(words.at(-1) ?? "") };
 };
 
 const orphaned = (deps: Pick<SlotDeps, "alive" | "clock">, slot: string): boolean => {
@@ -91,7 +91,7 @@ export const heldSlots = (deps: Pick<SlotDeps, "dir" | "alive" | "clock">): Held
 };
 
 export const warmingCount = (held: readonly HeldSlot[], now: number): number =>
-  held.filter((h) => !h.owner || !(now - h.owner.since >= WARMUP_MS)).length;
+  held.filter((h) => !h.owner || now - h.owner.since < WARMUP_MS).length;
 
 const tryTake = (deps: SlotDeps, n: number, label: string): string | null => {
   const slot = join(deps.dir, `slot.${n}`);

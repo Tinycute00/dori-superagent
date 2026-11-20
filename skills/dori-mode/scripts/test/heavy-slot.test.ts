@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { acquireSlot, type HeavyPolicy, heavyAdmission, heldSlots, WARMUP_MS } from "../src/heavy-slot.ts";
+import {
+  acquireSlot,
+  type HeavyPolicy,
+  heavyAdmission,
+  heldSlots,
+  WARMUP_MS,
+  warmingCount,
+} from "../src/heavy-slot.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
 const policy: HeavyPolicy = { minSlots: 1, maxSlots: 4, maxLoad: 10, jobMemGb: 4, memFreeMinPct: 15 };
@@ -85,4 +92,26 @@ test("a shrunk limit leaves every running slot in place while a new job waits", 
   expect(heldSlots(deps).map((h) => h.owner?.label)).toEqual(["job1", "job2", "job3"]);
   expect(logs).toHaveLength(1);
   expect(logs[0]).toStartWith("HEAVY_WAIT new limit 2 of 1-4 (memory), running 3:");
+});
+
+test("a job that leaves memory just under the floor is held: 27.6% of 31 GB minus 4 GB is 14.7%", () => {
+  const p = { ...policy, minSlots: 0 };
+  expect(heavyAdmission(p, { load1: 2, memFreePct: 27.6, memTotalGb: 31 }, 1, 0)).toMatchObject({
+    limit: 1,
+    admit: false,
+  });
+  expect(heavyAdmission(p, { load1: 2, memFreePct: 28, memTotalGb: 31 }, 1, 0)).toMatchObject({
+    limit: 2,
+    admit: true,
+  });
+});
+
+test("a label with spaces keeps its start time, so an old job no longer counts as starting", () => {
+  const dir = join(state.dir, "heavy");
+  const T0 = Date.parse("2026-01-01T12:00:00.000Z");
+  mkdirSync(join(dir, "slot.1"), { recursive: true });
+  writeFileSync(join(dir, "slot.1", "owner"), `42 browser suite ${new Date(T0 - 10 * 60_000).toISOString()}`);
+  const held = heldSlots({ dir, alive: () => true, clock: fakeClock(T0) });
+  expect(held[0]?.owner).toEqual({ pid: 42, label: "browser suite", since: T0 - 10 * 60_000 });
+  expect(warmingCount(held, T0)).toBe(0);
 });
